@@ -1,0 +1,19 @@
+# Built binaries - large and reproducible from the .js via vercel/pkg.
+# Distribute via a GitHub Release instead of committing them to git.
+*.exe
+
+# Node
+node_modules/
+
+# Editor / OS noise
+*.bak.*
+*.orig
+.DS_Store
+Thumbs.db
+
+# Editor "safe backup" copies
+*safeBackup*
+*safebackup*
+
+# Session/handoff state - never publish
+.remember/
