@@ -90,6 +90,13 @@ fi
 
 # Set CC_THINKING_DISPLAY=omitted to hide thinking; default shows summaries.
 DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
+case "$DISPLAY_VALUE" in
+  summarized|omitted) ;;
+  *)
+    echo "claude-think: invalid CC_THINKING_DISPLAY=$DISPLAY_VALUE; using summarized" >&2
+    DISPLAY_VALUE="summarized"
+    ;;
+esac
 
 # --- Optional customizations ------------------------------------------------
 #
@@ -129,8 +136,20 @@ prev=""
 
 for a in "$@"; do
   case "$a" in
-    --thinking-display)
+    --thinking-display|--thinking-display=*)
       have_display=true
+      ;;
+    --thinking=adaptive|--thinking=enabled)
+      thinking_adaptive=true
+      ;;
+    --thinking=disabled)
+      thinking_disabled=true
+      ;;
+    --max-thinking-tokens=*)
+      v="${a#*=}"
+      if [ -n "$v" ] && [ "$v" != "0" ]; then
+        max_thinking_on=true
+      fi
       ;;
     -p|--print)
       print_mode=true

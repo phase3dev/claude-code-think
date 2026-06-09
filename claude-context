@@ -115,10 +115,11 @@ fi
 CC_PATCH_CONTEXT_ICON="${CC_PATCH_CONTEXT_ICON:-1}"
 
 _cc_patch_index_js() {
-  local f="$1" tmp tmp2
+  local f="$1" tmp tmp2 old_count
   [ -f "$f" ] && [ -w "$f" ] || return 0
   if grep -q '>=101)return null}' "$f" 2>/dev/null; then return 0; fi   # already patched
-  if ! grep -q '>=50)return null}' "$f" 2>/dev/null; then return 0; fi  # gate absent (version changed)
+  old_count="$( (grep -o '>=50)return null}' "$f" 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ "$old_count" != "1" ]; then return 0; fi  # absent or ambiguous (version changed)
   if [ ! -e "$f.bak-context-icon" ]; then cp -p "$f" "$f.bak-context-icon" 2>/dev/null || true; fi
   tmp="${f}.ccpatch.$$"
   tmp2="${f}.ccpatch2.$$"
@@ -127,7 +128,7 @@ _cc_patch_index_js() {
   # second temp, copy that back over the metadata-preserving temp, then atomically
   # replace the original. A failed/partial step leaves the original untouched.
   cp -p "$f" "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
-  if sed 's/>=50)return null}/>=101)return null}/g' "$f" > "$tmp2" 2>/dev/null \
+  if sed 's/>=50)return null}/>=101)return null}/' "$f" > "$tmp2" 2>/dev/null \
      && [ -s "$tmp2" ] \
      && grep -q '>=101)return null}' "$tmp2" 2>/dev/null; then
     cat "$tmp2" > "$tmp" && mv -f "$tmp" "$f" || true

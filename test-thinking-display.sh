@@ -10,6 +10,24 @@ CLAUDE="${CLAUDE_REAL_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local
 [ -x "$CLAUDE" ] || { echo "could not find 'claude'; set CLAUDE_REAL_BIN" >&2; exit 1; }
 
 PROMPT='If all Bloops are Razzies, and all Razzies are Lazzies, are all Bloops necessarily Lazzies? Reason through it carefully step by step, then give a one-word answer.'
+A_JSONL="$(mktemp "${TMPDIR:-/tmp}/cc-thinking-a.XXXXXX")"
+B_JSONL="$(mktemp "${TMPDIR:-/tmp}/cc-thinking-b.XXXXXX")"
+cleanup() {
+  rm -f "$A_JSONL" "$B_JSONL"
+}
+trap cleanup EXIT
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$seconds" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" "$@"
+  else
+    "$@"
+  fi
+}
 
 inspect() { # $1 = jsonl file
 python3 - "$1" <<'PY'
@@ -34,14 +52,14 @@ PY
 }
 
 echo "### A: --thinking-display summarized"
-timeout 150 "$CLAUDE" -p "$PROMPT" --model opus --thinking-display summarized \
-  --output-format stream-json --verbose --max-turns 1 </dev/null >/tmp/cc_t_a.jsonl 2>/dev/null
-inspect /tmp/cc_t_a.jsonl
+run_with_timeout 150 "$CLAUDE" -p "$PROMPT" --model opus --thinking-display summarized \
+  --output-format stream-json --verbose --max-turns 1 </dev/null >"$A_JSONL" 2>/dev/null
+inspect "$A_JSONL"
 
 echo "### B: no flag (relies on showThinkingSummaries setting)"
-timeout 150 "$CLAUDE" -p "$PROMPT" --model opus \
-  --output-format stream-json --verbose --max-turns 1 </dev/null >/tmp/cc_t_b.jsonl 2>/dev/null
-inspect /tmp/cc_t_b.jsonl
+run_with_timeout 150 "$CLAUDE" -p "$PROMPT" --model opus \
+  --output-format stream-json --verbose --max-turns 1 </dev/null >"$B_JSONL" 2>/dev/null
+inspect "$B_JSONL"
 
 echo
 echo "Expected: A populated (len>0), B empty (len=0) on Opus 4.7 / 4.8."
