@@ -153,8 +153,9 @@ _cc_restore_context_icon() {
   # launches, or when the real binary is the standalone CLI). Unmatched globs
   # fall through harmlessly - _cc_patch_index_js skips non-files.
   for f in \
-    "$HOME"/.vscode-server/extensions/anthropic.claude-code-*/webview/index.js \
     "$HOME"/.vscode/extensions/anthropic.claude-code-*/webview/index.js \
+    "$HOME"/.vscode-insiders/extensions/anthropic.claude-code-*/webview/index.js \
+    "$HOME"/.vscode-server/extensions/anthropic.claude-code-*/webview/index.js \
     "$HOME"/.vscode-server-insiders/extensions/anthropic.claude-code-*/webview/index.js; do
     _cc_patch_index_js "$f"
   done
