@@ -203,8 +203,9 @@ function scanExtensionIndexes() {
   const home = process.env.USERPROFILE || process.env.HOME || "";
   const bases = [
     path.join(home, ".vscode", "extensions"),
-    path.join(home, ".vscode-server", "extensions"),
     path.join(home, ".vscode-insiders", "extensions"),
+    path.join(home, ".vscode-server", "extensions"),
+    path.join(home, ".vscode-server-insiders", "extensions"),
   ];
   const found = [];
   for (const base of bases) {
