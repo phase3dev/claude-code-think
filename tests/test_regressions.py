@@ -378,6 +378,12 @@ class PatcherRegressionTests(unittest.TestCase):
                 self.assertEqual(
                     stat.S_IMODE(after.st_mode), stat.S_IMODE(before.st_mode)
                 )
+            # NOTE: this test runs as a single user, so the temp file's owner
+            # already matches the target and the os.chown() in
+            # write_atomic_preserving_metadata is effectively a no-op. The
+            # cross-owner case that actually exercises the chown (root patching a
+            # user-owned bundle) requires two UIDs and is NOT covered here; that
+            # path is verified by inspection only.
             self.assertEqual(after.st_uid, before.st_uid)
             self.assertEqual(after.st_gid, before.st_gid)
             self.assertEqual(
