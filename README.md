@@ -1,44 +1,71 @@
-# claude-code-think
+# claude-code-workarounds
 
-This repository provides unofficial community workarounds for restoring visible extended-thinking summaries in Claude Code. These summaries stopped appearing with Opus 4.7 and remain unavailable in the affected paths, even when `showThinkingSummaries` is enabled.
+Unofficial community workarounds for Claude Code. Each entry below is an independent fix with its own scripts and detailed section, so use only what you need.
 
-Whether this behavior is intentional or a bug is outside the scope of this repository. For background, see these related GitHub issue threads:
+Whether the behaviors below are intentional or bugs is outside the scope of this repository. These are unofficial community workarounds, not affiliated with or endorsed by Anthropic. A future Claude Code update could make any of them obsolete. Use them at your own discretion.
+
+> This repository was formerly named `claude-code-think` (thinking-summaries fix only). It was renamed as more fixes were added; GitHub redirects the old URL, so existing links keep working.
+
+## Workarounds
+
+1. **Empty thinking summaries (Opus 4.7 / 4.8)** - updated 2026-06-08
+   Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via a launcher (recommended), a one-line extension patch, or a local proxy.
+   -> [details](#workaround-1-thinking-summaries)
+
+2. **Missing context-usage icon (1M context window)** - updated 2026-06-08
+   The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via a launcher that re-patches the webview on each launch, or a standalone patcher script.
+   -> [details](#workaround-2-context-usage-icon)
+
+## Launchers at a glance
+
+The recommended fix for each workaround is a small launcher that wraps the real `claude` binary. They are drop-in process wrappers that differ only in what they inject or patch. Pick the one matching the fixes you want:
+
+| Launcher | Thinking fix | Context-icon fix | Edits the extension? |
+|---|:--:|:--:|:--:|
+| `claudemax` | yes | yes | yes (webview bundle only) |
+| `claude-think` | yes | - | no |
+| `claude-context` | - | yes | yes (webview bundle only) |
+
+* **Linux / macOS:** the bash scripts [`claudemax`](claudemax), [`claude-think`](claude-think), [`claude-context`](claude-context).
+* **Windows:** the matching compiled `.exe` builds (`claudemax.exe`, `claude-think.exe`, `claude-context.exe`) on the [Releases](../../releases) page, built from the `*.win.js` sources.
+
+> Note: The interactive terminal (`claude` in a shell) already shows thinking summaries through the `showThinkingSummaries` setting and always shows the context icon. Both issues affect the VS Code extension and the headless `-p` / SDK paths.
+
+> Requirement: The real Claude Code CLI must already be installed and working. If `claude --version` prints a version, this requirement is met.
+
+> The thinking fix (`claude-think`) edits nothing. The context-icon fix (`claude-context`, `claudemax`) does edit the extension's webview bundle on disk - idempotently, with a one-time backup, an atomic write, and a toggle. See [Workaround 2](#workaround-2-context-usage-icon).
+
+---
+
+# Workaround 1: thinking summaries
+
+Extended-thinking summaries stopped appearing with Opus 4.7 and remain unavailable in the VS Code extension and headless paths, even when `showThinkingSummaries` is enabled. For background, see these GitHub issue threads:
 
 * <https://github.com/anthropics/claude-code/issues/49322>
 * <https://github.com/anthropics/claude-code/issues/63358>
 
-These are unofficial community workarounds. Use them at your own discretion.
-
-This repository may or may not be actively maintained, and future Claude Code updates could make these workarounds obsolete. It exists primarily to share public information, rather than to serve as an ongoing development project.
-
-## Workarounds
-
-These workarounds have been confirmed on Windows 11 and Ubuntu 24.04 with Opus 4.7 and Opus 4.8:
+There are three workarounds:
 
 * **Option 1: Launcher (recommended).** A small wrapper that launches Claude Code and adds the missing flag. It fixes the VS Code extension and headless CLI, and it survives Claude Code updates.
 * **Option 2: One-line patch.** A direct edit to one line of the VS Code extension. This only fixes VS Code and must be re-applied after each extension update.
 * **Option 3: Local proxy (advanced).** A localhost proxy that can fix all surfaces at once. This is powerful but untested and is documented for users who want to evaluate it.
 
-> Note: The interactive terminal, meaning `claude` in a shell, already shows summaries through the `showThinkingSummaries` setting. This issue affects the VS Code extension and headless `-p` or SDK paths.
-
-> Requirement: The real Claude Code CLI must already be installed and working. If `claude --version` prints a version, this requirement is met.
-
 ## Option 1: Launcher (recommended)
 
 The launcher starts the real `claude` binary and appends the missing `--thinking-display summarized` flag. It does not modify Claude Code files, so it continues working after updates. The same wrapper fixes both the VS Code extension and headless CLI.
 
-### Linux / macOS (tested on Ubuntu 24.04)
+Use [`claude-think`](claude-think) for the thinking fix alone, or [`claudemax`](claudemax) to also restore the context-usage icon ([Workaround 2](#workaround-2-context-usage-icon)). Setup is identical; substitute the launcher name.
 
-The launcher is [`claudemax`](claudemax). Save it, make it executable, then point VS Code to it.
+### Linux / macOS (tested on Ubuntu 24.04)
 
 ```sh
 # 1. Install the launcher
 mkdir -p ~/.local/bin
-cp claudemax ~/.local/bin/claudemax     # or paste the file contents into that path
-chmod +x ~/.local/bin/claudemax
+cp claude-think ~/.local/bin/claude-think     # or claudemax for both fixes
+chmod +x ~/.local/bin/claude-think
 
 # 2. Sanity check. This should print normal Claude help.
-~/.local/bin/claudemax --help
+~/.local/bin/claude-think --help
 ```
 
 ### Use it in VS Code
@@ -50,7 +77,7 @@ No PATH changes are required.
 3. Add this line, replacing `YOUR_USERNAME`. This is the official "Claude Code" extension's setting (shown in the UI as "Claude Code: Claude Process Wrapper"):
 
    ```jsonc
-   "claudeCode.claudeProcessWrapper": "/home/YOUR_USERNAME/.local/bin/claudemax"
+   "claudeCode.claudeProcessWrapper": "/home/YOUR_USERNAME/.local/bin/claude-think"
    ```
 
    If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path.
@@ -62,214 +89,44 @@ No PATH changes are required.
 
 ### Use it in a terminal
 
-Run `claudemax` in place of `claude`.
-
-<details>
-<summary>Show the full <code>claudemax</code> script</summary>
-
-```bash
-#!/usr/bin/env bash
-# claudemax - Claude Code launcher that restores extended-thinking summaries on
-# Opus 4.7 / 4.8, where the "Thinking" section otherwise renders empty.
-#
-# How it works: the VS Code extension and the headless CLI build the request
-# without thinking.display, so the API defaults to "omitted" and you get empty
-# thinking. This wrapper injects `--thinking-display summarized` into the launch
-# args (the one lever that is NOT interactivity-gated), so summaries render again
-# WITHOUT editing Claude's files, so it keeps working across Claude Code
-# updates. It covers the VS Code extension AND the headless CLI (`-p` / `--print`
-# / SDK). The interactive terminal already honors the showThinkingSummaries
-# setting and needs no injection.
-#
-# Use it:
-#   - VS Code (official "Claude Code" extension): set "claudeCode.claudeProcessWrapper"
-#     to the FULL path of this file, then reload the window. In a multi-root
-#     .code-workspace this setting is window-scoped, so put it in the workspace
-#     file's "settings" block (or User settings), not a folder .vscode/settings.json.
-#   - VS Code (third-party "Claude Code Chat"): set "claudeCodeChat.executable.path".
-#   - Terminal: run `claudemax` in place of `claude`.
-#
-# Toggle off:
-#   export CC_THINKING_DISPLAY=omitted
-#
-# Default:
-#   CC_THINKING_DISPLAY=summarized
-#
-# The real `claude` must be installed. This wrapper finds it automatically; if it
-# cannot, set CLAUDE_REAL_BIN to the full path of your real claude binary.
-
-set -euo pipefail
-
-# --- Locate the real claude binary -----------------------------------------
-
-self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-
-# Process-wrapper convention: the official VS Code extension invokes the wrapper
-# as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
-# args. <REAL_CLAUDE...> is either a single native-binary path (".../claude") or
-# a node interpreter followed by the bundled cli.js (".../node .../cli.js").
-# Peel that off so it is not forwarded as a stray positional argument, and
-# prefer it as the real claude. (Plain "claudemax <args>" use is unaffected:
-# <args> never begins with an existing claude/node binary path.)
-wrapper_bin=""
-if [ "$#" -gt 0 ] \
-  && printf '%s' "$1" | grep -Eqi '/claude(\.exe|\.cmd|\.bat)?$' \
-  && [ -e "$1" ]; then
-  wrapper_bin="$1"
-  shift
-elif [ "$#" -ge 2 ] \
-  && printf '%s' "$1" | grep -Eqi '/node(\.exe)?$' && [ -e "$1" ] \
-  && printf '%s' "$2" | grep -Eqi '\.(c?js|mjs)$' && [ -e "$2" ]; then
-  # node + cli.js: exec node directly and keep cli.js as the first forwarded arg.
-  wrapper_bin="$1"
-  shift
-fi
-
-REAL_CLAUDE="${CLAUDE_REAL_BIN:-}"
-if [ -z "$REAL_CLAUDE" ] && [ -n "$wrapper_bin" ]; then
-  REAL_CLAUDE="$wrapper_bin"
-fi
-
-if [ -z "$REAL_CLAUDE" ]; then
-  for c in \
-    "$HOME/.local/bin/claude" \
-    /usr/local/bin/claude \
-    /usr/bin/claude \
-    /opt/homebrew/bin/claude \
-    "$(command -v claude 2>/dev/null || true)"; do
-
-    [ -n "$c" ] && [ -x "$c" ] || continue
-    [ "$(readlink -f "$c" 2>/dev/null || echo "$c")" = "$self" ] && continue
-
-    REAL_CLAUDE="$c"
-    break
-  done
-fi
-
-[ -n "$REAL_CLAUDE" ] || {
-  echo "claudemax: could not find the real 'claude' binary; set CLAUDE_REAL_BIN" >&2
-  exit 1
-}
-
-# --- Behavior ---------------------------------------------------------------
-
-# Set CC_THINKING_DISPLAY=omitted to hide thinking; default shows summaries.
-DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
-
-# --- Optional customizations ------------------------------------------------
-#
-# Raise reasoning effort - longer, more detailed summaries. Uses more tokens:
-#   export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-xhigh}"
-#
-# Auto mode - let a classifier pick the effort level per task. This is an
-# ALTERNATIVE to a fixed effort level above (when auto mode is on, a fixed
-# CLAUDE_CODE_EFFORT_LEVEL may be ignored). Another frequently-requested feature:
-#   export CLAUDE_CODE_ENABLE_AUTO_MODE="${CLAUDE_CODE_ENABLE_AUTO_MODE:-1}"
-#
-# Longer network timeout for large requests:
-#   export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"
-
-# --- Inject the thinking-display fix into the launch args -------------------
-#
-# Fire on a real agent invocation. Surfaces signal a real run differently:
-#   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
-#     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
-#   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
-#   - headless passes "-p" / "--print".
-#
-# Skip injection when:
-#   - thinking is explicitly disabled
-#   - --thinking-display is already present (no double-inject vs a patched extension)
-#   - CC_THINKING_DISPLAY=omitted
-#   - the command is a subcommand/probe such as mcp, config, or --version,
-#     which carries none of these markers
-
-args=("$@")
-have_display=false
-thinking_adaptive=false
-thinking_disabled=false
-print_mode=false
-max_thinking_on=false
-prev=""
-
-for a in "$@"; do
-  case "$a" in
-    --thinking-display)
-      have_display=true
-      ;;
-    -p|--print)
-      print_mode=true
-      ;;
-  esac
-
-  if [ "$prev" = "--thinking" ]; then
-    case "$a" in
-      adaptive|enabled)
-        thinking_adaptive=true
-        ;;
-      disabled)
-        thinking_disabled=true
-        ;;
-    esac
-  fi
-
-  if [ "$prev" = "--max-thinking-tokens" ] && [ "$a" != "0" ]; then
-    max_thinking_on=true
-  fi
-
-  prev="$a"
-done
-
-if [ "$have_display" = false ] \
-  && [ "$thinking_disabled" = false ] \
-  && [ "$DISPLAY_VALUE" != "omitted" ] \
-  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
-  args+=(--thinking-display "$DISPLAY_VALUE")
-fi
-
-# The `${args[@]+...}` form guards the empty-array case under `set -u`,
-# including older Bash versions such as the default Bash on older macOS systems.
-exec "$REAL_CLAUDE" ${args[@]+"${args[@]}"}
-```
-
-</details>
+Run `claude-think` (or `claudemax`) in place of `claude`.
 
 ### Windows 11
 
-The same result can be achieved by using a compiled `.exe` version of the wrapper.
+The same result is achieved with the compiled `.exe`.
 
-1. Download `claudemax.exe` from this repository's [Releases](../../releases), or build it yourself by following [Building claudemax.exe](#building-claudemaxexe).
-2. Put `claudemax.exe` somewhere stable, such as `C:\Users\YOU\.local\bin\claudemax.exe`.
+1. Download `claude-think.exe` (or `claudemax.exe` for both fixes) from this repository's [Releases](../../releases), or build it yourself - see [Building the .exe files](#building-the-exe-files).
+2. Put it somewhere stable, such as `C:\Users\YOU\.local\bin\claude-think.exe`.
 3. Open the Command Palette and select "Preferences: Open User Settings (JSON)".
 4. Add the following setting (the official "Claude Code" extension setting). Use double backslashes in the path.
 
    ```jsonc
-   "claudeCode.claudeProcessWrapper": "C:\\Users\\YOU\\.local\\bin\\claudemax.exe"
+   "claudeCode.claudeProcessWrapper": "C:\\Users\\YOU\\.local\\bin\\claude-think.exe"
    ```
 
    If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path. In a multi-root `.code-workspace`, put `claudeCode.claudeProcessWrapper` in the workspace file's `"settings"` block or in User settings, not a folder's `.vscode/settings.json`.
 
 5. Reload the VS Code window by opening the Command Palette and selecting "Developer: Reload Window".
-6. To use it in a terminal, run `claudemax.exe` in place of `claude`.
+6. To use it in a terminal, run `claude-think.exe` in place of `claude`.
 
 > The wrapper finds the real Claude binary automatically, including native installs with `claude.exe` and npm installs with `claude.cmd`. If it cannot find the binary, set `CLAUDE_REAL_BIN` to the full path of your `claude` binary.
 
-The Windows source is [`claudemax.win.js`](claudemax.win.js).
+The Windows sources are [`claude-think.win.js`](claude-think.win.js) and [`claudemax.win.js`](claudemax.win.js).
 
-### Turn the fix on or off
+### Turn the thinking fix on or off
 
 The launcher reads one environment variable, `CC_THINKING_DISPLAY`:
 
 * unset or `summarized`: show thinking summaries, which is the default
 * `omitted`: hide thinking summaries
 
-Set the variable in the same environment where Claude Code launches, such as your shell profile or the VS Code extension environment, then reload. To disable the launcher entirely, clear or remove the `claudeCode.claudeProcessWrapper` setting (do not point it at `claude`, for the reason in the undo note above); if you used `claudeCodeChat.executable.path`, point it back to `claude` or remove it.
+Set the variable in the same environment where Claude Code launches (such as your shell profile or the VS Code extension environment), then reload. To disable the launcher entirely, clear or remove the `claudeCode.claudeProcessWrapper` setting (do not point it at `claude`, for the reason in the undo note above).
 
 ### What the launcher does
 
 When Claude Code starts a real agent run it puts one of these markers on the command line: `--max-thinking-tokens N` (the current VS Code extension's budget thinking mode), `--thinking adaptive` or `enabled` (the SDK and older extensions), or `-p` / `--print` (headless). It does not add the matching `--thinking-display` flag, so the API defaults the display to `"omitted"` and the Thinking section comes back empty.
 
-The launcher inspects the arguments and, when it detects a real run via any of those markers, appends `--thinking-display summarized` before handing off to the real `claude` binary. The official extension also launches the wrapper with the real CLI path as a leading argument (a "process wrapper" convention); the launcher detects and consumes that path so it is not forwarded as a stray positional. See [Technical details](#technical-details) and [TECHNICAL.md](TECHNICAL.md) for more information.
+The launcher inspects the arguments and, when it detects a real run via any of those markers, appends `--thinking-display summarized` before handing off to the real `claude` binary. The official extension also launches the wrapper with the real CLI path as a leading argument (a "process wrapper" convention); the launcher detects and consumes that path so it is not forwarded as a stray positional. See [TECHNICAL.md](TECHNICAL.md) for more.
 
 ### Why Option 1 is recommended
 
@@ -279,7 +136,7 @@ The launcher inspects the arguments and, when it detects a real run via any of t
 4. It only injects the flag on real agent runs, not on subcommands or probes such as `mcp`, `config`, or `--version`.
 5. It does not add the flag twice, so it can coexist with a patched or updated extension.
 6. It can be toggled with one environment variable.
-7. It provides one place to configure effort level, auto mode, timeouts, or model routing. See the commented customization section in the script and [Side Note](#side-note-use-option-1-to-launch-claude-code-with-third-party-models).
+7. It provides one place to configure effort level, auto mode, timeouts, or model routing. See the commented customization section in the script and the [Side note](#side-note-launching-claude-code-with-third-party-models).
 
 ## Option 2: One-line `extension.js` patch (VS Code only)
 
@@ -292,7 +149,7 @@ if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)
 if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
 ```
 
-> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; `patch-extension.sh` does this automatically. This version fragility is one reason Option 1 is preferred.
+> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; [`patch-extension.sh`](patch-extension.sh) does this automatically. This version fragility is one reason Option 1 is preferred.
 
 ### Automatic patching on Linux, macOS, WSL, or Git Bash
 
@@ -308,9 +165,7 @@ Reload the VS Code window after patching. Re-run the patch after every extension
 
 ### Manual patching on any OS
 
-Find the extension's `extension.js` file, back it up, replace the line shown above, save the file, and reload VS Code.
-
-Common locations:
+Find the extension's `extension.js` file, back it up, replace the line shown above, save the file, and reload VS Code. Common locations:
 
 * Linux/macOS: `~/.vscode/extensions/anthropic.claude-code-*/`
 * Windows: `%USERPROFILE%\.vscode\extensions\anthropic.claude-code-*\`
@@ -334,13 +189,78 @@ claude ...                                        # for VS Code, set it for the 
 
 Security: The proxy sees your live auth token. It binds to `127.0.0.1` only, never `0.0.0.0`, and does not log headers or bodies. Unset `ANTHROPIC_BASE_URL` to return directly to Anthropic. See [`proxy.js`](proxy.js) and [TECHNICAL.md](TECHNICAL.md#option-3-local-proxy-design) for details and caveats.
 
-## Side Note: Use Option 1 to launch Claude Code with third-party models
+---
 
-Because Option 1 is a launcher you control, you can use it to launch Claude Code with any third-party, Anthropic-API-compatible model, such as DeepSeek.
+# Workaround 2: context-usage icon
 
-### DeepSeek Example
+The context-usage indicator (the small pie in the chat input that shows how full the context window is) disappeared for many users on recent extension builds. It is not actually removed: recent builds (around 2.1.165 and later) gate the indicator so it renders **only after you have used more than 50% of the context window**. With the 1M context window enabled, 50% is roughly 500,000 tokens, so in normal use the icon is effectively never shown.
 
-Instead of the thinking environment variables above, set model-routing variables in the same launcher:
+The `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` workaround that circulates in issue threads is not a real fix: it only shrinks the window so 50% is reached sooner, at the cost of giving up the 1M window, and it does not touch the threshold. This workaround addresses the threshold directly.
+
+Related GitHub issue threads (feature requests for a persistent context indicator, useful as corroboration):
+
+* <https://github.com/anthropics/claude-code/issues/18456>
+* <https://github.com/anthropics/claude-code/issues/66021>
+
+There is no environment variable or CLI flag for this threshold, so the fix is a tiny edit to the extension's webview bundle. There are two ways to apply it.
+
+## Option 1: Launcher (recommended)
+
+Use [`claude-context`](claude-context) for the context-icon fix alone, or [`claudemax`](claudemax) to also restore thinking summaries ([Workaround 1](#workaround-1-thinking-summaries)). Install and wire it up exactly like the Workaround 1 launcher (copy to `~/.local/bin`, point `claudeCode.claudeProcessWrapper` at it, reload), substituting the launcher name. On Windows, download `claude-context.exe` or `claudemax.exe` from [Releases](../../releases).
+
+On each launch the wrapper idempotently patches the extension's `webview/index.js`, flipping the hidden threshold so the icon shows at any usage level. Because it re-applies every launch, an extension auto-update that reinstalls a fresh bundle is re-patched on the next launch.
+
+> First-run note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be **after** the webview already loaded the old bundle. The first time you enable it you may need **two reloads**: reload once (the spawn patches the file), then reload again (the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
+
+### What it changes
+
+In the indicator component, the render gate is `if (c >= 50) return null`, where `c` is the percent of context **remaining**. So the icon renders only when less than 50% remains (more than 50% used). The fix flips the threshold:
+
+```text
+if(c>=50)return null   ->   if(c>=101)return null
+```
+
+`c` maxes at 100, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard (no context window known yet) is left intact, so nothing renders before a session exists. The edit is anchored on the stable string `>=50)return null}`, not on the minified component name, which changes between builds.
+
+### Turn the context-icon fix on or off
+
+The launcher reads `CC_PATCH_CONTEXT_ICON`:
+
+* unset or `1`: patch the webview so the icon is visible, which is the default
+* `0`: leave the extension webview untouched
+
+### This edits the extension (unlike the thinking fix)
+
+Unlike Workaround 1, this fix edits the extension's bundled `webview/index.js`. The edit is made safe:
+
+* **Idempotent** - it skips a file that is already patched, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
+* **Backed up once** - `index.js.bak-context-icon` is created before the first edit.
+* **Atomic** - the change is written to a temp file and moved into place only after it is verified, so a failed or partial write leaves the original untouched.
+* **Best-effort** - every step is guarded; a read-only file, a renamed bundle, or a missing tool simply no-ops and never blocks the launch.
+* **Reversible** - delete the patched bundle's `.bak-context-icon` after restoring it, set `CC_PATCH_CONTEXT_ICON=0`, or just let an extension update replace the file.
+
+## Option 2: Standalone patcher script
+
+[`fix-context-icon.py`](fix-context-icon.py) applies the same one-character-class change directly, without a launcher. It auto-discovers installed extensions, backs each up, and is idempotent.
+
+```sh
+python3 fix-context-icon.py            # auto-discover and patch all installs
+python3 fix-context-icon.py --revert   # restore from backups
+python3 fix-context-icon.py /path/to/webview/index.js   # explicit target(s)
+```
+
+After patching, reload the webview (Command Palette -> "Developer: Reload Window"). Because an extension update reinstalls a fresh bundle and reverts the patch, re-run the script after updates (or use the launcher, which re-applies automatically).
+
+## Known limitations
+
+1. **Coarse glyph.** The pie is a 3-state gauge, not a continuous fill: it only changes appearance at roughly 62.5% and 87% used. The precise percentage is in the hover tooltip and in `/context`, not in the glyph itself. Making the pie a fine-grained gauge would require new SVG geometry, not a one-line patch, so it is out of scope.
+2. **Transient 0% right after a reload.** The icon reads from a usage store that resets to zero on a window reload and is repopulated by the next assistant turn. Immediately after reloading a continued conversation, before any new turn, the tooltip can briefly read "0% context used"; it self-corrects to the true value after the next turn. (`/context` is unaffected - it queries the CLI directly.) If you would rather hide the icon while the store is empty than show a transient 0%, change the icon's `if(t===0)return null` to `if(t<=0)return null` in `webview/index.js`; the icon then stays hidden until the first turn populates real numbers. This is a manual, optional tweak and is not applied by default.
+
+---
+
+## Side note: launching Claude Code with third-party models
+
+Because Option 1 is a launcher you control, you can also use it to launch Claude Code with any third-party, Anthropic-API-compatible model, such as DeepSeek. Set model-routing variables in the same launcher environment:
 
 ```sh
 # --- Connection ---
@@ -354,94 +274,59 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="deepseek-v4-flash"
 export CLAUDE_CODE_SUBAGENT_MODEL="deepseek-v4-flash"
 ```
 
-Setup is otherwise identical to Option 1. This is unrelated to the thinking-summary fix.
+Setup is otherwise identical to Option 1. This is unrelated to the fixes above.
 
 ## Troubleshooting
 
-* Still empty after setup: Reload the VS Code window after changing the setting. Confirm that the setting points to the launcher's full absolute path. On Windows, confirm that the path uses double backslashes.
-* `could not find the real 'claude' binary`: The wrapper could not locate your real Claude binary. Set `CLAUDE_REAL_BIN` to its full path. Use `which claude` on Linux/macOS or `where claude` on Windows.
-* Nothing changes in a plain terminal chat: This is expected. The interactive TUI already shows summaries through `showThinkingSummaries` and does not need this fix.
+* Thinking still empty after setup: Reload the VS Code window after changing the setting. Confirm the setting points to the launcher's full absolute path. On Windows, confirm the path uses double backslashes.
+* Context icon still missing after setup: It may take two reloads the first time (see the first-run note above). Confirm you are using `claude-context` or `claudemax`, and that `CC_PATCH_CONTEXT_ICON` is not set to `0`.
+* `could not find the real 'claude' binary`: Set `CLAUDE_REAL_BIN` to its full path. Use `which claude` on Linux/macOS or `where claude` on Windows.
+* Nothing changes in a plain terminal chat: This is expected. The interactive TUI already shows summaries and the context icon, and does not need these fixes.
 * Summaries are short: Summary length tracks the reasoning effort level. Try a higher `CLAUDE_CODE_EFFORT_LEVEL`, such as `xhigh`, or enable auto mode with `CLAUDE_CODE_ENABLE_AUTO_MODE=1`. Higher effort uses more tokens.
-* To verify the root cause: Run [`test-thinking-display.sh`](test-thinking-display.sh). It performs a live A/B test of the flag and the setting and uses a small number of tokens.
+* To verify the thinking root cause: Run [`test-thinking-display.sh`](test-thinking-display.sh). It performs a live A/B test and uses a small number of tokens.
 
 ## Files
 
-| File | Description |
-|---|---|
-| [`claudemax`](claudemax) | Option 1 launcher for Linux/macOS. |
-| [`claudemax.win.js`](claudemax.win.js) | Option 1 launcher for Windows. Build it to `claudemax.exe`. |
-| [`patch-extension.sh`](patch-extension.sh) | Option 2 idempotent `extension.js` patch with `--revert` and `--dry-run`. |
-| [`proxy.js`](proxy.js) | Option 3 localhost proxy. Advanced and untested. |
-| [`claude-think.sh`](claude-think.sh) | Minimal CLI-only launcher variant. |
-| [`test-thinking-display.sh`](test-thinking-display.sh) | Live A/B test showing that the flag is the relevant lever. |
-| [`TECHNICAL.md`](TECHNICAL.md) | Full root-cause analysis and design notes. |
+| File | Workaround | Description |
+|---|---|---|
+| [`claudemax`](claudemax) | both | Launcher (Linux/macOS) with both fixes. |
+| [`claude-think`](claude-think) | thinking | Launcher (Linux/macOS), thinking fix only. |
+| [`claude-context`](claude-context) | context icon | Launcher (Linux/macOS), context-icon fix only. |
+| [`claudemax.win.js`](claudemax.win.js) | both | Windows source for `claudemax.exe`. |
+| [`claude-think.win.js`](claude-think.win.js) | thinking | Windows source for `claude-think.exe`. |
+| [`claude-context.win.js`](claude-context.win.js) | context icon | Windows source for `claude-context.exe`. |
+| [`patch-extension.sh`](patch-extension.sh) | thinking | Option 2 idempotent `extension.js` patch with `--revert` and `--dry-run`. |
+| [`fix-context-icon.py`](fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
+| [`proxy.js`](proxy.js) | thinking | Option 3 localhost proxy. Advanced and untested. |
+| [`test-thinking-display.sh`](test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
+| [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis and design notes. |
 
-## Building claudemax.exe
+## Releases
 
-The Windows launcher is built from [`claudemax.win.js`](claudemax.win.js) into a standalone `.exe` with [vercel/pkg](https://github.com/vercel/pkg). Node.js is required.
+Prebuilt Windows `.exe` launchers are published on the [Releases](../../releases) page rather than committed to the repo, since they are large and reproducible from the `*.win.js` sources. Each release attaches:
+
+* `claudemax.exe` - both fixes
+* `claude-think.exe` - thinking fix only
+* `claude-context.exe` - context-icon fix only
+
+Linux and macOS users run the bash scripts from the repo and do not need a download.
+
+## Building the .exe files
+
+The Windows launchers are built from their `*.win.js` sources into standalone `.exe`s with [vercel/pkg](https://github.com/vercel/pkg). Node.js is required.
 
 ```sh
 npm i -g pkg
-pkg claudemax.win.js --targets node18-win-x64 --output claudemax.exe
+pkg claudemax.win.js      --targets node18-win-x64 --output claudemax.exe
+pkg claude-think.win.js   --targets node18-win-x64 --output claude-think.exe
+pkg claude-context.win.js --targets node18-win-x64 --output claude-context.exe
 ```
 
-The prebuilt `.exe` is published on the [Releases](../../releases) page rather than committed to the repo, since it is large and reproducible from the source above. Building it yourself is only necessary if you would rather not download the release asset.
+## Compatibility
 
-## Technical details
+Confirmed on Opus 4.7 and Opus 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04.
 
-This is a condensed version of [TECHNICAL.md](TECHNICAL.md), with enough detail to explain why the Thinking section is empty and why each fix works.
+* **Thinking fix:** earlier builds (`2.1.165` / `2.1.167`) signaled thinking with `--thinking adaptive`; `2.1.169` uses `--max-thinking-tokens` on the VS Code path. The launcher keys off either, plus `-p`/`--print` for headless. The `--thinking-display` flag and the request field are stable levers; the Option 2 minified strings can change between releases (the script matches generically and skips if not found).
+* **Context-icon fix:** the `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch anchors on the stable substring `>=50)return null}`; if a future build changes that exact string, the launcher safely no-ops and the anchor needs updating.
 
-### Root cause
-
-The Messages API `thinking.display` field controls whether summarized thinking is returned. On Opus 4.7 and 4.8, it defaults to `"omitted"`. Unless the client explicitly sends `thinking: {type: "adaptive", display: "summarized"}`, the thinking block streams back empty.
-
-There is no raw or full thinking mode. The only valid values are `"summarized"` and `"omitted"`.
-
-Claude Code has a setting for this, `showThinkingSummaries`, but it is only wired up on one of the three surfaces:
-
-```js
-// In the CLI binary, simplified:
-function p6(){ return !isInteractive }                    // p6() === "NOT interactive"
-function EK8(){ return settings.showThinkingSummaries ?? false }
-
-// request builder:
-if (thinkingDisplay === "summarized" || thinkingDisplay === "omitted")
-    pz.display = thinkingDisplay;            // the --thinking-display flag, ungated
-else if (!p6() && EK8())                     // isInteractive && showThinkingSummaries
-    pz.display = "summarized";
-```
-
-The setting-to-display mapping is gated on `isInteractive`. The VS Code extension launches the CLI non-interactively with `--input-format stream-json`, so that branch never runs. The extension only forwards `--thinking-display` when its own `display` value is already set (the array variable is minified, shown here as `q`, as in extension 2.1.16x):
-
-```js
-// extension.js, simplified:
-if (l.type !== "disabled" && l.display) q.push("--thinking-display", l.display);
-```
-
-`l.display` is never populated from `showThinkingSummaries`; the literal string `"summarized"` appears zero times in `extension.js`. The result on the extension and headless paths is that `display` is never sent, the API omits summaries, and the Thinking section is empty even with `showThinkingSummaries: true`.
-
-The current extension signals a real run on the VS Code path with `--max-thinking-tokens <budgetTokens>` (its budget thinking mode) rather than `--thinking adaptive`, and it launches a configured `claudeProcessWrapper` with the real CLI path as a leading argument. Both matter for the launcher: it triggers on `--max-thinking-tokens` and strips the leading binary path.
-
-The ungated lever is the `--thinking-display summarized` CLI flag, which works headless. Each fix in this repository forces that flag, or the equivalent request field, to be present.
-
-### Behavior matrix
-
-| Surface | `showThinkingSummaries: true` | `--thinking-display summarized` |
-|---|:--:|:--:|
-| Interactive terminal (TUI) | Works | Works |
-| `claude -p` / headless / SDK | Ignored because it is non-interactive | Works |
-| VS Code extension | Ignored because it is non-interactive and never mapped | Works, but the extension does not send it by default |
-
-> On the VS Code path the current extension signals a real run with `--max-thinking-tokens`, not `--thinking adaptive`, and launches the wrapper with the real CLI path as a leading argument. The launcher handles both.
-
-### How each option applies the lever
-
-* **Option 1: Launcher.** Appends `--thinking-display summarized` to the arguments before executing the real CLI, triggering on `--max-thinking-tokens` (nonzero), `--thinking adaptive`/`enabled`, or `-p`/`--print`, and stripping the leading real-binary path the official extension passes. It operates outside the app, survives updates, and covers VS Code plus headless runs.
-* **Option 2: Patch.** Changes the extension so it always forwards the flag with `l.display || "summarized"`. It modifies the bundle, is wiped by updates, is fragile against the minified variable rename (`B`, `q`, ...), and fixes VS Code only.
-* **Option 3: Proxy.** Sets `body.thinking.display = "summarized"` on the wire for every `/v1/messages` request. It is surface-agnostic.
-
-For the live A/B confirmation, deeper design notes, proxy security model, and notes on summary length versus effort level, see [TECHNICAL.md](TECHNICAL.md).
-
-## Confirmation
-
-Confirmed on Opus 4.7 and Opus 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04. Earlier builds (`2.1.165` / `2.1.167`) signaled thinking with `--thinking adaptive`; `2.1.169` uses `--max-thinking-tokens` on the VS Code path. Behavior may change in future Claude Code releases.
+Behavior may change in future Claude Code releases.

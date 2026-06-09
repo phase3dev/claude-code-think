@@ -1,6 +1,15 @@
-# Technical details: empty thinking summaries on Opus 4.7 / 4.8
+# Technical details
 
-Full root-cause analysis and design notes behind the workarounds in the [README](README.md). This expands on the README's "Technical details" section with the request-level mechanics, the live A/B confirmation, and the proxy design.
+Full root-cause analysis and design notes behind the workarounds in the [README](README.md).
+
+* [Workaround 1: empty thinking summaries](#workaround-1-empty-thinking-summaries)
+* [Workaround 2: missing context-usage icon](#workaround-2-missing-context-usage-icon)
+
+---
+
+# Workaround 1: empty thinking summaries
+
+Request-level mechanics, the live A/B confirmation, and the proxy design for the empty-thinking-summaries fix on Opus 4.7 / 4.8.
 
 ## TL;DR
 
@@ -135,3 +144,96 @@ Status: provided as a working starting point but not extensively tested, so vali
 ## Compatibility
 
 Confirmed on Opus 4.7 / 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04; earlier confirmations were on `2.1.165` / `2.1.167` (which signaled thinking with `--thinking adaptive`). The CLI flag and the request field are stable levers, but the exact minified strings used by [`patch-extension.sh`](patch-extension.sh) (Option 2) can change between extension releases (e.g. the array variable `B` -> `q`); the script matches the variable generically and, if the surrounding pattern isn't found, skips and tells you to inspect manually. Options 1 and 3 don't depend on internal strings.
+
+---
+
+# Workaround 2: missing context-usage icon
+
+## TL;DR
+
+The context-usage indicator in the VS Code chat input is gated to render only after more than 50% of the context window has been used. With the 1M context window that is about 500,000 tokens, so it is effectively never shown. There is no environment variable or CLI flag for the threshold, so the fix is a one-character-class edit to the extension's webview bundle, re-applied on each launch by the wrapper so it survives updates.
+
+## Root cause (from the webview bundle)
+
+The indicator is a React component in the extension's `webview/index.js`. The bundle is minified, so the component name `FJe` and its helpers (`OJe`, `BIt`, `b0e`, ...) are minifier-assigned and change between builds. Deobfuscated:
+
+```js
+function FJe({usedTokens:e, contextWindow:t, onCompact:i, buttonClassName:n}) {
+  let a = t > 0 ? Math.min(e / t * 100, 100) : 0,  // a = % used
+      l = b0e !== null ? b0e : a,                  // l = % used (b0e is a debug override, normally null)
+      c = 100 - l;                                 // c = % REMAINING
+  if (b0e === null) {
+    if (t === 0) return null;        // no session / no window yet -> hide
+    if (c >= 50) return null;        // <-- the gate: hide while >=50% remains
+  }
+  // ... renders the pie button + tooltip + popup ...
+}
+```
+
+`c` is the percent of context *remaining*, so `c >= 50` hides the icon whenever at least half the window is free, i.e. it only appears once more than 50% is used. With a 1M window that is 500k tokens. Older bundles (`2.1.131`, `2.1.128`) do not contain this gate; it appeared around `2.1.165`, which matches users' recollection that the icon used to be visible.
+
+The `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` env var that circulates in the issue threads only shrinks the window to 200k so 50% (100k) is reached sooner. It does not touch the threshold and forces giving up the 1M window, so it is not a real fix.
+
+## The fix
+
+```text
+if(c>=50)return null   ->   if(c>=101)return null
+```
+
+`c` is in `[0, 100]`, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard is left intact, so nothing renders before a context window is known. Using `>=101` (rather than deleting the line) is the smallest, most legible, greppable, reversible change, and it preserves the surrounding structure for a clean string substitution. The patch is anchored on the literal `>=50)return null}`, which is stable across builds even though the minified names around it are not, and which occurs exactly once in `2.1.169`.
+
+There is no integrity or subresource check on the webview bundle (the only `sha256` references in `extension.js` belong to a bundled crypto library), so an edited `index.js` loads normally.
+
+## Delivery: re-patch on each launch
+
+The launcher is registered as the extension's process wrapper (`claudeCode.claudeProcessWrapper`), so the extension invokes it as `<wrapper> <REAL_CLAUDE...> <args...>` every time it spawns the CLI, including the first spawn after an auto-update. That is the ideal place to re-apply a bundle patch: it self-heals across updates with no daemon or cron.
+
+The wrapper discovers `index.js` two ways:
+
+* Precise: walk up from the real `claude` path the extension hands it until a path component matches `anthropic.claude-code-*`, then `<root>/webview/index.js`.
+* Fallback: scan the user's `.vscode`, `.vscode-server`, and `.vscode-insiders` extension dirs for `anthropic.claude-code-*/webview/index.js` (covers terminal launches and standalone-CLI installs).
+
+The edit is made safe:
+
+* Idempotent: skips an already-patched file, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
+* Backed up once to `index.js.bak-context-icon` before the first edit.
+* Atomic: written to a temp file and moved into place only after it is verified non-empty and actually patched, so a failed or partial write cannot corrupt the bundle.
+* Metadata-preserving via `cp -p` (portable; the GNU-only `chmod`/`chown --reference` is avoided so it also works on macOS/BSD). The Windows launcher writes with `fs.writeFileSync` + `fs.renameSync`, inheriting the parent directory's ACLs.
+* Fully guarded so it never blocks the launch (a read-only file, a renamed bundle, or a missing tool simply no-ops).
+
+Timing note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be *after* the webview already loaded the old bundle. So the first time you enable it you may need two reloads (the spawn patches the file, then the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
+
+## How the icon works (context for future changes)
+
+### Data source resets on reload
+
+`FJe` is fed from a live `usageData` store:
+
+```js
+React.createElement(FJe, {
+  usedTokens:    e.usageData.value.totalTokens,
+  contextWindow: e.usageData.value.contextWindow - e.usageData.value.maxOutputTokens - 13000,
+  onCompact:     l,
+  // ...
+});
+```
+
+`usageData` initializes to all zeros and is only filled by usage events that arrive during an assistant turn. There is no seeding from `get_claude_state` on resume, so immediately after a window reload of a continued conversation, before any new turn, the store is still `{0,0,0,0}`: `usedTokens = 0` (the tooltip reads "0% used") and `contextWindow = 0 - 0 - 13000 = -13000` (negative, so the `t === 0` guard does not fire and, after the patch, the icon still renders at 0%). This self-corrects on the next turn, when a usage event fills the store with the real totals. `/context` does not use this store; it queries the CLI directly, so it always shows the true number.
+
+If showing a transient 0% is undesirable, changing `if(t===0)return null` to `if(t<=0)return null` hides the icon while the store is empty (`t` is negative then) and shows it with the correct value after the first turn. This is documented as an optional manual tweak and is not applied by default.
+
+### The glyph is a coarse 3-state gauge
+
+```js
+function BIt(e){ if(e<62.5) return 50; if(e<87) return 75; return 99 }  // e = % used
+```
+
+`BIt` maps percent-used to one of three bucket keys (`50`, `75`, `99`) that index arc-path lookup tables for the SVG. So the pie has only three visual states: below 62.5% used, 62.5 to 87%, and above 87%. It does not track 12% vs 30% vs 50%; it is a "getting full" warning light, which made sense when it was only shown past 50% used. The precise figure lives in the hover tooltip and the popup, and in `/context`. Making the pie a continuous gauge would require new SVG geometry, not a string patch, so it is out of scope.
+
+### Click behavior
+
+The pie button's `onClick` is `onCompact`: clicking the icon triggers compaction, not opening `/context`. Opening the detailed panel is the `/context` command. These are kept distinct.
+
+## Compatibility
+
+Confirmed on VS Code extension `2.1.169` (native-binary CLI) on Windows 11 and Ubuntu 24.04. The `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch keys off the stable substring `>=50)return null}`, not the minified component name; if a future build changes that exact substring, the launcher safely no-ops (the icon goes missing again) until the anchor is updated. The standalone [`fix-context-icon.py`](fix-context-icon.py) applies the same change directly and supports `--revert`.

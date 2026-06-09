@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# claude-think - Claude Code launcher that restores extended-thinking summaries
+# on Opus 4.7 / 4.8, where the "Thinking" section otherwise renders empty.
+#
+# Thinking-only variant. To ALSO restore the always-visible context-usage icon,
+# use `claudemax` (both fixes combined); for the icon fix alone, use
+# `claude-context`. All three are drop-in process wrappers and differ only in
+# what they inject/patch.
+#
+# How it works: the VS Code extension and the headless CLI build the request
+# without thinking.display, so the API defaults to "omitted" and you get empty
+# thinking. This wrapper injects `--thinking-display summarized` into the launch
+# args (the one lever that is NOT interactivity-gated), so summaries render again
+# WITHOUT editing Claude's files, so it keeps working across Claude Code
+# updates. It covers the VS Code extension AND the headless CLI (`-p` / `--print`
+# / SDK). The interactive terminal already honors the showThinkingSummaries
+# setting and needs no injection.
+#
+# Use it:
+#   - VS Code (official "Claude Code" extension): set "claudeCode.claudeProcessWrapper"
+#     to the FULL path of this file, then reload the window. In a multi-root
+#     .code-workspace this setting is window-scoped, so put it in the workspace
+#     file's "settings" block (or User settings), not a folder .vscode/settings.json.
+#   - VS Code (third-party "Claude Code Chat"): set "claudeCodeChat.executable.path".
+#   - Terminal: run `claude-think` in place of `claude`.
+#
+# Toggle off:
+#   export CC_THINKING_DISPLAY=omitted
+#
+# Default:
+#   CC_THINKING_DISPLAY=summarized
+#
+# The real `claude` must be installed. This wrapper finds it automatically; if it
+# cannot, set CLAUDE_REAL_BIN to the full path of your real claude binary.
+
+set -euo pipefail
+
+# --- Locate the real claude binary -----------------------------------------
+
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# Process-wrapper convention: the official VS Code extension invokes the wrapper
+# as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
+# args. <REAL_CLAUDE...> is either a single native-binary path (".../claude") or
+# a node interpreter followed by the bundled cli.js (".../node .../cli.js").
+# Peel that off so it is not forwarded as a stray positional argument, and
+# prefer it as the real claude. (Plain "claude-think <args>" use is unaffected:
+# <args> never begins with an existing claude/node binary path.)
+wrapper_bin=""
+if [ "$#" -gt 0 ] \
+  && printf '%s' "$1" | grep -Eqi '/claude(\.exe|\.cmd|\.bat)?$' \
+  && [ -e "$1" ]; then
+  wrapper_bin="$1"
+  shift
+elif [ "$#" -ge 2 ] \
+  && printf '%s' "$1" | grep -Eqi '/node(\.exe)?$' && [ -e "$1" ] \
+  && printf '%s' "$2" | grep -Eqi '\.(c?js|mjs)$' && [ -e "$2" ]; then
+  # node + cli.js: exec node directly and keep cli.js as the first forwarded arg.
+  wrapper_bin="$1"
+  shift
+fi
+
+REAL_CLAUDE="${CLAUDE_REAL_BIN:-}"
+if [ -z "$REAL_CLAUDE" ] && [ -n "$wrapper_bin" ]; then
+  REAL_CLAUDE="$wrapper_bin"
+fi
+
+if [ -z "$REAL_CLAUDE" ]; then
+  for c in \
+    "$HOME/.local/bin/claude" \
+    /usr/local/bin/claude \
+    /usr/bin/claude \
+    /opt/homebrew/bin/claude \
+    "$(command -v claude 2>/dev/null || true)"; do
+
+    [ -n "$c" ] && [ -x "$c" ] || continue
+    [ "$(readlink -f "$c" 2>/dev/null || echo "$c")" = "$self" ] && continue
+
+    REAL_CLAUDE="$c"
+    break
+  done
+fi
+
+[ -n "$REAL_CLAUDE" ] || {
+  echo "claude-think: could not find the real 'claude' binary; set CLAUDE_REAL_BIN" >&2
+  exit 1
+}
+
+# --- Behavior ---------------------------------------------------------------
+
+# Set CC_THINKING_DISPLAY=omitted to hide thinking; default shows summaries.
+DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
+
+# --- Optional customizations ------------------------------------------------
+#
+# Raise reasoning effort - longer, more detailed summaries. Uses more tokens:
+#   export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-xhigh}"
+#
+# Auto mode - let a classifier pick the effort level per task. This is an
+# ALTERNATIVE to a fixed effort level above (when auto mode is on, a fixed
+# CLAUDE_CODE_EFFORT_LEVEL may be ignored). Another frequently-requested feature:
+#   export CLAUDE_CODE_ENABLE_AUTO_MODE="${CLAUDE_CODE_ENABLE_AUTO_MODE:-1}"
+#
+# Longer network timeout for large requests:
+#   export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"
+
+# --- Inject the thinking-display fix into the launch args -------------------
+#
+# Fire on a real agent invocation. Surfaces signal a real run differently:
+#   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
+#     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
+#   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
+#   - headless passes "-p" / "--print".
+#
+# Skip injection when:
+#   - thinking is explicitly disabled
+#   - --thinking-display is already present (no double-inject vs a patched extension)
+#   - CC_THINKING_DISPLAY=omitted
+#   - the command is a subcommand/probe such as mcp, config, or --version,
+#     which carries none of these markers
+
+args=("$@")
+have_display=false
+thinking_adaptive=false
+thinking_disabled=false
+print_mode=false
+max_thinking_on=false
+prev=""
+
+for a in "$@"; do
+  case "$a" in
+    --thinking-display)
+      have_display=true
+      ;;
+    -p|--print)
+      print_mode=true
+      ;;
+  esac
+
+  if [ "$prev" = "--thinking" ]; then
+    case "$a" in
+      adaptive|enabled)
+        thinking_adaptive=true
+        ;;
+      disabled)
+        thinking_disabled=true
+        ;;
+    esac
+  fi
+
+  if [ "$prev" = "--max-thinking-tokens" ] && [ "$a" != "0" ]; then
+    max_thinking_on=true
+  fi
+
+  prev="$a"
+done
+
+if [ "$have_display" = false ] \
+  && [ "$thinking_disabled" = false ] \
+  && [ "$DISPLAY_VALUE" != "omitted" ] \
+  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
+  args+=(--thinking-display "$DISPLAY_VALUE")
+fi
+
+# The `${args[@]+...}` form guards the empty-array case under `set -u`,
+# including older Bash versions such as the default Bash on older macOS systems.
+exec "$REAL_CLAUDE" ${args[@]+"${args[@]}"}

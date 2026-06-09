@@ -1,39 +1,30 @@
-// claudemax.win.js - Windows launcher for Claude Code that combines TWO
-// unofficial fixes:
+// claude-think.win.js - Windows launcher for Claude Code that restores
+// extended-thinking summaries on Opus 4.7 / 4.8, where the "Thinking" section
+// otherwise renders empty.
 //
-//   1. Restores extended-thinking summaries on Opus 4.7 / 4.8, where the
-//      "Thinking" section otherwise renders empty in the VS Code extension and
-//      headless -p/SDK. Done by injecting `--thinking-display summarized` into
-//      the launch args (the one lever that is NOT interactivity-gated). Edits
-//      nothing.
-//   2. Restores the always-visible context-usage icon in the VS Code chat input.
-//      Recent extension builds (2.1.165+) hide that icon until you have used
-//      >50% of the context window; with the 1M window that is ~500k tokens, so it
-//      is effectively never shown. There is no env/CLI lever, so (unlike fix #1)
-//      this wrapper idempotently patches the extension's webview bundle on each
-//      launch, flipping the threshold so the icon shows at any usage level.
-//      Because it re-applies every launch, it survives extension updates.
+// Thinking-only variant. To ALSO restore the always-visible context-usage icon,
+// use claudemax (both fixes combined); for the icon fix alone, use
+// claude-context. All three are drop-in process wrappers and differ only in what
+// they inject/patch.
 //
-// This is the "both fixes" variant. For thinking-only use claude-think.exe; for
-// the context-icon fix alone use claude-context.exe. All three are drop-in
-// process wrappers and differ only in what they inject/patch.
-//
-// NOTE: unlike fix #1, fix #2 DOES edit the extension's bundled webview/index.js.
-// That edit is idempotent, backed up once to index.js.bak-context-icon, written
-// via a temp file + rename, best-effort (it never blocks the launch), and
-// toggle-able with CC_PATCH_CONTEXT_ICON=0.
+// How it works: the VS Code extension and the headless CLI build the request
+// without thinking.display, so the API defaults to "omitted" and you get empty
+// thinking. This wrapper injects `--thinking-display summarized` into the launch
+// args (the one lever that is NOT interactivity-gated), so summaries render again
+// WITHOUT editing Claude's files, so it keeps working across Claude Code updates.
+// It covers the VS Code extension AND the headless CLI (`-p` / `--print` / SDK).
+// The interactive terminal already honors the showThinkingSummaries setting and
+// needs no injection.
 //
 // Use it: set the official "Claude Code" extension's "claudeCode.claudeProcessWrapper"
 // setting (or the third-party "Claude Code Chat" extension's
-// "claudeCodeChat.executable.path") to claudemax.exe and reload the window, or
-// run claudemax.exe in place of claude in a terminal. In a multi-root
+// "claudeCodeChat.executable.path") to claude-think.exe and reload the window, or
+// run claude-think.exe in place of claude in a terminal. In a multi-root
 // .code-workspace, claudeProcessWrapper is window-scoped: put it in the
 // workspace file's "settings" block (or User settings), not a folder's
 // .vscode/settings.json.
 //
-// Toggle off:
-//   set CC_THINKING_DISPLAY=omitted    hide thinking summaries (default: summarized)
-//   set CC_PATCH_CONTEXT_ICON=0        leave the extension webview untouched (default: 1)
+// Toggle off: set CC_THINKING_DISPLAY=omitted   (default is summarized).
 //
 // The real `claude` must be installed. This wrapper finds it automatically
 // (native install `claude.exe` or npm `claude.cmd`); if it cannot, set the
@@ -41,7 +32,7 @@
 //
 // Build to a standalone .exe with vercel/pkg:
 //   npm i -g pkg
-//   pkg claudemax.win.js --targets node18-win-x64 --output claudemax.exe
+//   pkg claude-think.win.js --targets node18-win-x64 --output claude-think.exe
 
 const { execFileSync, spawnSync } = require("child_process");
 const fs = require("fs");
@@ -121,117 +112,9 @@ const claude =
     : wrapperBin || findClaude();
 if (!claude) {
   console.error(
-    "claudemax: could not find the real 'claude' binary; set CLAUDE_REAL_BIN"
+    "claude-think: could not find the real 'claude' binary; set CLAUDE_REAL_BIN"
   );
   process.exit(1);
-}
-
-// --- Restore the always-visible context-usage icon (patches the webview) ----
-//
-// Idempotent edit to component `FJe` in the extension's webview/index.js:
-//   if(c>=50)return null   ->   if(c>=101)return null
-// `c` is "% of context remaining"; it maxes at 100, so >=101 never fires and the
-// icon renders whenever a context window is known (the t===0 "no session yet"
-// guard is left intact). Best-effort: every step is wrapped so it can never block
-// the launch; a one-time backup is made and the write goes through a temp + rename
-// so a failed write leaves the original untouched. Re-applied each launch, so an
-// extension update that reinstalls a fresh bundle is re-patched next launch.
-//
-// Maintenance note: this keys off the stable string ">=50)return null}", not the
-// minified component name. If a future build changes that exact substring, the
-// routine safely no-ops until the anchor here is updated.
-const ICON_OLD = ">=50)return null}";
-const ICON_NEW = ">=101)return null}";
-
-function ccPatchIndexJs(file) {
-  try {
-    if (!fs.existsSync(file)) return;
-    let data;
-    try {
-      data = fs.readFileSync(file, "utf8");
-    } catch (_) {
-      return; // not readable
-    }
-    if (data.indexOf(ICON_NEW) !== -1) return; // already patched
-    if (data.indexOf(ICON_OLD) === -1) return; // gate absent (version changed)
-    const bak = file + ".bak-context-icon";
-    if (!fs.existsSync(bak)) {
-      try {
-        fs.writeFileSync(bak, data);
-      } catch (_) {
-        /* best-effort backup */
-      }
-    }
-    const patched = data.split(ICON_OLD).join(ICON_NEW);
-    if (patched.indexOf(ICON_NEW) === -1) return; // sanity: substitution took
-    const tmp = file + ".ccpatch." + process.pid;
-    try {
-      fs.writeFileSync(tmp, patched);
-      fs.renameSync(tmp, file); // atomic on the same volume
-    } catch (_) {
-      try {
-        fs.unlinkSync(tmp);
-      } catch (_) {
-        /* nothing to clean up */
-      }
-    }
-  } catch (_) {
-    /* never block the launch */
-  }
-}
-
-// Most precise target: walk up from the real binary path the extension handed us
-// (its bundled resources\native-binary\claude.exe) to a dir named
-// anthropic.claude-code-*, then <root>\webview\index.js.
-function extensionRootFromBinary(binPath) {
-  try {
-    let d = path.dirname(path.resolve(binPath));
-    let prev = null;
-    while (d && d !== prev) {
-      if (/^anthropic\.claude-code-/i.test(path.basename(d))) return d;
-      prev = d;
-      d = path.dirname(d);
-    }
-  } catch (_) {
-    /* ignore */
-  }
-  return null;
-}
-
-// Fallback: scan this user's VS Code extension dirs for any installed build.
-function scanExtensionIndexes() {
-  const home = process.env.USERPROFILE || process.env.HOME || "";
-  const bases = [
-    path.join(home, ".vscode", "extensions"),
-    path.join(home, ".vscode-server", "extensions"),
-    path.join(home, ".vscode-insiders", "extensions"),
-  ];
-  const found = [];
-  for (const base of bases) {
-    let entries;
-    try {
-      entries = fs.readdirSync(base);
-    } catch (_) {
-      continue; // dir doesn't exist
-    }
-    for (const name of entries) {
-      if (/^anthropic\.claude-code-/i.test(name)) {
-        found.push(path.join(base, name, "webview", "index.js"));
-      }
-    }
-  }
-  return found;
-}
-
-function restoreContextIcon(binPath) {
-  if (process.env.CC_PATCH_CONTEXT_ICON === "0") return;
-  const targets = new Set();
-  if (binPath) {
-    const root = extensionRootFromBinary(binPath);
-    if (root) targets.add(path.join(root, "webview", "index.js"));
-  }
-  for (const f of scanExtensionIndexes()) targets.add(f);
-  for (const f of targets) ccPatchIndexJs(f);
 }
 
 // --- Behavior --------------------------------------------------------------
@@ -287,9 +170,6 @@ if (
 ) {
   args.push("--thinking-display", displayValue);
 }
-
-// Patch the webview before handing off (best-effort; never throws).
-restoreContextIcon(wrapperBin);
 
 // .cmd/.bat (npm install) need a shell; .exe (native install) is exec'd directly.
 const useShell = /\.(cmd|bat)$/i.test(claude);
