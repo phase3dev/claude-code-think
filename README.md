@@ -56,7 +56,7 @@ No PATH changes are required.
    If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path.
 
 4. Reload the VS Code window by opening the Command Palette and selecting "Developer: Reload Window".
-5. To undo the change, point the setting back to your normal `claude` binary and reload.
+5. To undo the change, clear or remove the `claudeCode.claudeProcessWrapper` setting, then reload. Do not point this setting at `claude` directly: under the process-wrapper convention the extension would launch `claude <REAL_CLAUDE> <args...>` and the real CLI would receive its own path as a stray argument. (If you used the third-party `claudeCodeChat.executable.path` instead, that one can simply be pointed back to your normal `claude` binary or removed.)
 
 > Multi-root note: `claudeCode.claudeProcessWrapper` is window-scoped. In a single folder, User or Workspace settings both work. In a multi-root `.code-workspace`, set it in the `.code-workspace` file's `"settings"` block (or User settings); VS Code ignores it in a folder's `.vscode/settings.json`.
 
@@ -263,7 +263,7 @@ The launcher reads one environment variable, `CC_THINKING_DISPLAY`:
 * unset or `summarized`: show thinking summaries, which is the default
 * `omitted`: hide thinking summaries
 
-Set the variable in the same environment where Claude Code launches, such as your shell profile or the VS Code extension environment, then reload. To disable the launcher entirely, point the VS Code setting back to your normal `claude` binary.
+Set the variable in the same environment where Claude Code launches, such as your shell profile or the VS Code extension environment, then reload. To disable the launcher entirely, clear or remove the `claudeCode.claudeProcessWrapper` setting (do not point it at `claude`, for the reason in the undo note above); if you used `claudeCodeChat.executable.path`, point it back to `claude` or remove it.
 
 ### What the launcher does
 
