@@ -12,8 +12,11 @@
 # setting and needs no injection.
 #
 # Use it:
-#   - VS Code: set "claudeCodeChat.executable.path" to the FULL path of this
-#     file, then reload the window.
+#   - VS Code (official "Claude Code" extension): set "claudeCode.claudeProcessWrapper"
+#     to the FULL path of this file, then reload the window. In a multi-root
+#     .code-workspace this setting is window-scoped, so put it in the workspace
+#     file's "settings" block (or User settings), not a folder .vscode/settings.json.
+#   - VS Code (third-party "Claude Code Chat"): set "claudeCodeChat.executable.path".
 #   - Terminal: run `claudemax` in place of `claude`.
 #
 # Toggle off:
@@ -30,7 +33,32 @@ set -euo pipefail
 # --- Locate the real claude binary -----------------------------------------
 
 self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# Process-wrapper convention: the official VS Code extension invokes the wrapper
+# as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
+# args. <REAL_CLAUDE...> is either a single native-binary path (".../claude") or
+# a node interpreter followed by the bundled cli.js (".../node .../cli.js").
+# Peel that off so it is not forwarded as a stray positional argument, and
+# prefer it as the real claude. (Plain "claudemax <args>" use is unaffected:
+# <args> never begins with an existing claude/node binary path.)
+wrapper_bin=""
+if [ "$#" -gt 0 ] \
+  && printf '%s' "$1" | grep -Eqi '/claude(\.exe|\.cmd|\.bat)?$' \
+  && [ -e "$1" ]; then
+  wrapper_bin="$1"
+  shift
+elif [ "$#" -ge 2 ] \
+  && printf '%s' "$1" | grep -Eqi '/node(\.exe)?$' && [ -e "$1" ] \
+  && printf '%s' "$2" | grep -Eqi '\.(c?js|mjs)$' && [ -e "$2" ]; then
+  # node + cli.js: exec node directly and keep cli.js as the first forwarded arg.
+  wrapper_bin="$1"
+  shift
+fi
+
 REAL_CLAUDE="${CLAUDE_REAL_BIN:-}"
+if [ -z "$REAL_CLAUDE" ] && [ -n "$wrapper_bin" ]; then
+  REAL_CLAUDE="$wrapper_bin"
+fi
 
 if [ -z "$REAL_CLAUDE" ]; then
   for c in \
@@ -73,21 +101,25 @@ DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
 
 # --- Inject the thinking-display fix into the launch args -------------------
 #
-# Fire on a real agent invocation: VS Code/SDK passes "--thinking adaptive"
-# or "--thinking enabled"; headless passes "-p" or "--print".
+# Fire on a real agent invocation. Surfaces signal a real run differently:
+#   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
+#     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
+#   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
+#   - headless passes "-p" / "--print".
 #
 # Skip injection when:
 #   - thinking is explicitly disabled
 #   - --thinking-display is already present (no double-inject vs a patched extension)
 #   - CC_THINKING_DISPLAY=omitted
 #   - the command is a subcommand/probe such as mcp, config, or --version,
-#     which carries neither marker
+#     which carries none of these markers
 
 args=("$@")
 have_display=false
 thinking_adaptive=false
 thinking_disabled=false
 print_mode=false
+max_thinking_on=false
 prev=""
 
 for a in "$@"; do
@@ -111,13 +143,17 @@ for a in "$@"; do
     esac
   fi
 
+  if [ "$prev" = "--max-thinking-tokens" ] && [ "$a" != "0" ]; then
+    max_thinking_on=true
+  fi
+
   prev="$a"
 done
 
 if [ "$have_display" = false ] \
   && [ "$thinking_disabled" = false ] \
   && [ "$DISPLAY_VALUE" != "omitted" ] \
-  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ]; }; then
+  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
   args+=(--thinking-display "$DISPLAY_VALUE")
 fi
 

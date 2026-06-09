@@ -32,13 +32,20 @@ Two ways to set `display`:
 The VS Code extension launches the CLI with `--input-format stream-json` (i.e. non-interactive), so path #2 never fires. That leaves path #1, the flag, as the only lever. But the extension builds the thinking args like this:
 
 ```js
-// extension.js, simplified:
-let B = ["--output-format","stream-json","--verbose","--input-format","stream-json"];
-// ... pushes --thinking adaptive / enabled / disabled ...
-if (l.type !== "disabled" && l.display) B.push("--thinking-display", l.display);
+// extension.js, simplified (the array variable is minified; it is `q` in 2.1.16x,
+// `B` in 2.0.x, and so on):
+let q = ["--output-format","stream-json","--verbose","--input-format","stream-json"];
+// adaptive thinking mode:        q.push("--thinking", "adaptive");
+// budget thinking mode (2.1.16x): q.push("--max-thinking-tokens", l.budgetTokens.toString());
+if (l.type !== "disabled" && l.display) q.push("--thinking-display", l.display);
 ```
 
 `l.display` is only ever set if some upstream layer already set it, and nothing maps `showThinkingSummaries` onto it. The literal string `"summarized"` occurs 0 times in `extension.js`; `showThinkingSummaries` appears only in the settings *schema*, never in the request path. So `l.display` is always undefined, `--thinking-display` is never passed, the binary is non-interactive so the setting gate is also skipped, `display` stays undefined, the server defaults to `"omitted"`, and you get empty thinking even with `showThinkingSummaries: true`.
+
+Two extension-side details changed in the 2.1.16x line and matter for the launcher (Option 1):
+
+1. **Thinking signal.** The VS Code path now emits `--max-thinking-tokens <budgetTokens>` for its (default) budget thinking mode, not `--thinking adaptive`; `--thinking adaptive` is only emitted for the explicit adaptive mode. A launcher that triggers solely on `--thinking adaptive`/`-p` therefore never fires from the extension, which is why the previous launcher version stopped working when the extension updated.
+2. **Process-wrapper calling convention.** When the `claudeCode.claudeProcessWrapper` setting is set, `resolveClaudeBinary()` returns `{pathToClaudeCodeExecutable: <wrapper>, executableArgs: [<realBinary>]}` (or `[<node>, <cli.js>]` when a bundled `cli.js` is used instead of a native binary). So the wrapper is invoked as `<wrapper> <realBinary> <args...>`, with the real CLI as a leading argument. The launcher detects and consumes that leading path; otherwise it would be forwarded to the real CLI as a stray positional.
 
 ## Behavior matrix
 
@@ -48,7 +55,7 @@ if (l.type !== "disabled" && l.display) B.push("--thinking-display", l.display);
 | `claude -p` / headless / SDK | Ignored (`isInteractive` false) | Works |
 | VS Code extension | Ignored (non-interactive, never mapped) | Works (extension just never sends it) |
 
-This is why the interactive terminal was never broken and needs no fix, while the extension and headless paths show empty thinking.
+This is why the interactive terminal was never broken and needs no fix, while the extension and headless paths show empty thinking. Note that on the VS Code path the current extension marks a real run with `--max-thinking-tokens`, not `--thinking adaptive`; the launcher keys off either.
 
 ## Confirmation (live A/B, headless)
 
@@ -67,7 +74,7 @@ VS Code UI was confirmed separately: after applying the Option 2 patch and reloa
 
 ### Option 1: launcher
 
-Claude Code already places `--thinking adaptive` (VS Code/SDK) or `-p`/`--print` (headless) on the command line for real agent runs. The launcher inspects the args and, when it detects a real run, appends `--thinking-display summarized` before `exec`'ing the real `claude`. Because it lives *outside* the app:
+Claude Code places one of these markers on the command line for real agent runs: `--max-thinking-tokens N` (the current VS Code extension's budget mode), `--thinking adaptive`/`enabled` (SDK and older extensions), or `-p`/`--print` (headless). The launcher inspects the args and, when it detects a real run via any of those markers, appends `--thinking-display summarized` before `exec`'ing the real `claude`. It also strips a leading real-binary path when the official extension passes one (the process-wrapper convention above), handling both a single native-binary path and a `node` + `cli.js` pair. Because it lives *outside* the app:
 
 - it survives extension/CLI updates (nothing in Claude's install is modified);
 - one wrapper covers both the VS Code extension and headless `-p`/SDK;
@@ -86,6 +93,8 @@ if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)
 // to:
 if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
 ```
+
+The array variable (`B` here) is minified and renames between builds (`q` in 2.1.16x), so `patch-extension.sh` matches it with a capture group rather than a fixed literal and preserves whatever name the build uses. A hand edit should keep the surrounding build's variable name.
 
 [`patch-extension.sh`](patch-extension.sh) applies this idempotently across all installed Claude Code extensions (backing up each first), with `--revert` and `--dry-run`. It must be re-applied after every extension update (the install folder is replaced on upgrade), and it only fixes VS Code; headless/SDK still need Option 1.
 
@@ -125,4 +134,4 @@ Status: provided as a working starting point but not extensively tested, so vali
 
 ## Compatibility
 
-Confirmed on Opus 4.7 / 4.8 with native-installer CLI `2.1.166` and VS Code extension `2.1.165` / `2.1.167`, on Windows 11 and Ubuntu 24.04. The CLI flag and the request field are stable levers, but the exact minified strings used by [`patch-extension.sh`](patch-extension.sh) (Option 2) can change between extension releases. If the target string isn't found, the script skips and tells you to inspect manually. Options 1 and 3 don't depend on internal strings.
+Confirmed on Opus 4.7 / 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04; earlier confirmations were on `2.1.165` / `2.1.167` (which signaled thinking with `--thinking adaptive`). The CLI flag and the request field are stable levers, but the exact minified strings used by [`patch-extension.sh`](patch-extension.sh) (Option 2) can change between extension releases (e.g. the array variable `B` -> `q`); the script matches the variable generically and, if the surrounding pattern isn't found, skips and tells you to inspect manually. Options 1 and 3 don't depend on internal strings.

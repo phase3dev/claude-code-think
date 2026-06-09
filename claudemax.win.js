@@ -11,8 +11,13 @@
 // The interactive terminal already honors the showThinkingSummaries setting and
 // needs no injection.
 //
-// Use it: point VS Code's "claudeCodeChat.executable.path" at claudemax.exe and
-// reload the window, or run claudemax.exe in place of claude in a terminal.
+// Use it: set the official "Claude Code" extension's "claudeCode.claudeProcessWrapper"
+// setting (or the third-party "Claude Code Chat" extension's
+// "claudeCodeChat.executable.path") to claudemax.exe and reload the window, or
+// run claudemax.exe in place of claude in a terminal. In a multi-root
+// .code-workspace, claudeProcessWrapper is window-scoped: put it in the
+// workspace file's "settings" block (or User settings), not a folder's
+// .vscode/settings.json.
 //
 // Toggle off: set CC_THINKING_DISPLAY=omitted   (default is summarized).
 //
@@ -65,7 +70,41 @@ function findClaude() {
   return null;
 }
 
-const claude = findClaude();
+// Process-wrapper convention: the official VS Code extension invokes the wrapper
+// as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
+// args. <REAL_CLAUDE...> is either a single native-binary path (".../claude.exe")
+// or a node interpreter followed by the bundled cli.js (".../node .../cli.js").
+// Peel that off so it is not forwarded as a stray positional argument, and
+// prefer it as the real claude. (The third-party claudeCodeChat "executable.path"
+// mode calls <wrapper> <args...> with no leading binary, which falls through.)
+const rawArgs = process.argv.slice(2);
+let wrapperBin = null;
+let argv = rawArgs;
+if (
+  rawArgs.length &&
+  /[\\/]claude(\.exe|\.cmd|\.bat)?$/i.test(rawArgs[0]) &&
+  fs.existsSync(rawArgs[0])
+) {
+  wrapperBin = rawArgs[0];
+  argv = rawArgs.slice(1);
+} else if (
+  rawArgs.length >= 2 &&
+  /[\\/]node(\.exe)?$/i.test(rawArgs[0]) &&
+  fs.existsSync(rawArgs[0]) &&
+  /\.(c?js|mjs)$/i.test(rawArgs[1]) &&
+  fs.existsSync(rawArgs[1])
+) {
+  // node + cli.js: exec node directly, keep cli.js as the first forwarded arg.
+  wrapperBin = rawArgs[0];
+  argv = rawArgs.slice(1);
+}
+
+// Resolve the real claude: explicit override wins, then the extension-provided
+// path, then autodetection.
+const claude =
+  process.env.CLAUDE_REAL_BIN && fs.existsSync(process.env.CLAUDE_REAL_BIN)
+    ? process.env.CLAUDE_REAL_BIN
+    : wrapperBin || findClaude();
 if (!claude) {
   console.error(
     "claudemax: could not find the real 'claude' binary; set CLAUDE_REAL_BIN"
@@ -91,19 +130,27 @@ const displayValue = process.env.CC_THINKING_DISPLAY || "summarized";
 //   if (!process.env.API_TIMEOUT_MS) process.env.API_TIMEOUT_MS = "600000";
 
 // --- Inject the thinking-display fix into the launch args -------------------
-// Fire on a real agent invocation: VS Code/SDK passes "--thinking adaptive"
-// (or enabled); headless passes "-p"/"--print". Skip when thinking is disabled,
-// when --thinking-display is already present (no double-inject vs a patched
-// extension), or for subcommands/probes (mcp, config, --version, ...).
-const argv = process.argv.slice(2);
+// Fire on a real agent invocation. Surfaces signal a real run differently:
+//   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
+//     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
+//   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
+//   - headless passes "-p" / "--print".
+// Skip when thinking is disabled, when --thinking-display is already present
+// (no double-inject vs a patched extension), or for subcommands/probes
+// (mcp, config, --version, ...), which carry none of these markers.
 let haveDisplay = false,
   thinkingAdaptive = false,
   thinkingDisabled = false,
-  printMode = false;
+  printMode = false,
+  maxThinkingOn = false;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--thinking-display") haveDisplay = true;
   if (a === "-p" || a === "--print") printMode = true;
+  if (a === "--max-thinking-tokens") {
+    const v = argv[i + 1];
+    if (v && v !== "0") maxThinkingOn = true;
+  }
   if (argv[i - 1] === "--thinking") {
     if (a === "adaptive" || a === "enabled") thinkingAdaptive = true;
     if (a === "disabled") thinkingDisabled = true;
@@ -114,7 +161,7 @@ if (
   !haveDisplay &&
   !thinkingDisabled &&
   displayValue !== "omitted" &&
-  (thinkingAdaptive || printMode)
+  (thinkingAdaptive || printMode || maxThinkingOn)
 ) {
   args.push("--thinking-display", displayValue);
 }

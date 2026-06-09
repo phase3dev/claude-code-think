@@ -47,16 +47,18 @@ No PATH changes are required.
 
 1. Open the Command Palette with Ctrl/Cmd + Shift + P.
 2. Select "Preferences: Open User Settings (JSON)".
-3. Add this line, replacing `YOUR_USERNAME`:
+3. Add this line, replacing `YOUR_USERNAME`. This is the official "Claude Code" extension's setting (shown in the UI as "Claude Code: Claude Process Wrapper"):
 
    ```jsonc
-   "claudeCodeChat.executable.path": "/home/YOUR_USERNAME/.local/bin/claudemax"
+   "claudeCode.claudeProcessWrapper": "/home/YOUR_USERNAME/.local/bin/claudemax"
    ```
 
-   You can also use the "Claude Code: Claude Process Wrapper" setting in the VS Code app and enter `/home/YOUR_USERNAME/.local/bin/claudemax`.
+   If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path.
 
 4. Reload the VS Code window by opening the Command Palette and selecting "Developer: Reload Window".
 5. To undo the change, point the setting back to your normal `claude` binary and reload.
+
+> Multi-root note: `claudeCode.claudeProcessWrapper` is window-scoped. In a single folder, User or Workspace settings both work. In a multi-root `.code-workspace`, set it in the `.code-workspace` file's `"settings"` block (or User settings); VS Code ignores it in a folder's `.vscode/settings.json`.
 
 ### Use it in a terminal
 
@@ -73,14 +75,18 @@ Run `claudemax` in place of `claude`.
 # How it works: the VS Code extension and the headless CLI build the request
 # without thinking.display, so the API defaults to "omitted" and you get empty
 # thinking. This wrapper injects `--thinking-display summarized` into the launch
-# args. That is the one lever that is not interactivity-gated, so summaries
-# render again without editing Claude Code files. It covers the VS Code extension
-# and the headless CLI (`-p` / `--print` / SDK). The interactive terminal already
-# honors the showThinkingSummaries setting and needs no injection.
+# args (the one lever that is NOT interactivity-gated), so summaries render again
+# WITHOUT editing Claude's files, so it keeps working across Claude Code
+# updates. It covers the VS Code extension AND the headless CLI (`-p` / `--print`
+# / SDK). The interactive terminal already honors the showThinkingSummaries
+# setting and needs no injection.
 #
 # Use it:
-#   - VS Code: set "claudeCodeChat.executable.path" to the full path of this
-#     file, then reload the window.
+#   - VS Code (official "Claude Code" extension): set "claudeCode.claudeProcessWrapper"
+#     to the FULL path of this file, then reload the window. In a multi-root
+#     .code-workspace this setting is window-scoped, so put it in the workspace
+#     file's "settings" block (or User settings), not a folder .vscode/settings.json.
+#   - VS Code (third-party "Claude Code Chat"): set "claudeCodeChat.executable.path".
 #   - Terminal: run `claudemax` in place of `claude`.
 #
 # Toggle off:
@@ -89,7 +95,7 @@ Run `claudemax` in place of `claude`.
 # Default:
 #   CC_THINKING_DISPLAY=summarized
 #
-# The real `claude` must be installed. This wrapper finds it automatically. If it
+# The real `claude` must be installed. This wrapper finds it automatically; if it
 # cannot, set CLAUDE_REAL_BIN to the full path of your real claude binary.
 
 set -euo pipefail
@@ -97,7 +103,32 @@ set -euo pipefail
 # --- Locate the real claude binary -----------------------------------------
 
 self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+
+# Process-wrapper convention: the official VS Code extension invokes the wrapper
+# as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
+# args. <REAL_CLAUDE...> is either a single native-binary path (".../claude") or
+# a node interpreter followed by the bundled cli.js (".../node .../cli.js").
+# Peel that off so it is not forwarded as a stray positional argument, and
+# prefer it as the real claude. (Plain "claudemax <args>" use is unaffected:
+# <args> never begins with an existing claude/node binary path.)
+wrapper_bin=""
+if [ "$#" -gt 0 ] \
+  && printf '%s' "$1" | grep -Eqi '/claude(\.exe|\.cmd|\.bat)?$' \
+  && [ -e "$1" ]; then
+  wrapper_bin="$1"
+  shift
+elif [ "$#" -ge 2 ] \
+  && printf '%s' "$1" | grep -Eqi '/node(\.exe)?$' && [ -e "$1" ] \
+  && printf '%s' "$2" | grep -Eqi '\.(c?js|mjs)$' && [ -e "$2" ]; then
+  # node + cli.js: exec node directly and keep cli.js as the first forwarded arg.
+  wrapper_bin="$1"
+  shift
+fi
+
 REAL_CLAUDE="${CLAUDE_REAL_BIN:-}"
+if [ -z "$REAL_CLAUDE" ] && [ -n "$wrapper_bin" ]; then
+  REAL_CLAUDE="$wrapper_bin"
+fi
 
 if [ -z "$REAL_CLAUDE" ]; then
   for c in \
@@ -127,12 +158,12 @@ DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
 
 # --- Optional customizations ------------------------------------------------
 #
-# Raise reasoning effort. Longer summaries use more tokens:
+# Raise reasoning effort - longer, more detailed summaries. Uses more tokens:
 #   export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-xhigh}"
 #
-# Auto mode lets a classifier choose the effort level per task. This is an
-# alternative to a fixed effort level. When auto mode is enabled, a fixed
-# CLAUDE_CODE_EFFORT_LEVEL may be ignored.
+# Auto mode - let a classifier pick the effort level per task. This is an
+# ALTERNATIVE to a fixed effort level above (when auto mode is on, a fixed
+# CLAUDE_CODE_EFFORT_LEVEL may be ignored). Another frequently-requested feature:
 #   export CLAUDE_CODE_ENABLE_AUTO_MODE="${CLAUDE_CODE_ENABLE_AUTO_MODE:-1}"
 #
 # Longer network timeout for large requests:
@@ -140,21 +171,25 @@ DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
 
 # --- Inject the thinking-display fix into the launch args -------------------
 #
-# Fire on a real agent invocation. VS Code/SDK passes "--thinking adaptive"
-# or "--thinking enabled"; headless passes "-p" or "--print".
+# Fire on a real agent invocation. Surfaces signal a real run differently:
+#   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
+#     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
+#   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
+#   - headless passes "-p" / "--print".
 #
 # Skip injection when:
 #   - thinking is explicitly disabled
-#   - --thinking-display is already present
+#   - --thinking-display is already present (no double-inject vs a patched extension)
 #   - CC_THINKING_DISPLAY=omitted
-#   - the command is a subcommand or probe such as mcp, config, or --version,
-#     which carries neither marker
+#   - the command is a subcommand/probe such as mcp, config, or --version,
+#     which carries none of these markers
 
 args=("$@")
 have_display=false
 thinking_adaptive=false
 thinking_disabled=false
 print_mode=false
+max_thinking_on=false
 prev=""
 
 for a in "$@"; do
@@ -178,13 +213,17 @@ for a in "$@"; do
     esac
   fi
 
+  if [ "$prev" = "--max-thinking-tokens" ] && [ "$a" != "0" ]; then
+    max_thinking_on=true
+  fi
+
   prev="$a"
 done
 
 if [ "$have_display" = false ] \
   && [ "$thinking_disabled" = false ] \
   && [ "$DISPLAY_VALUE" != "omitted" ] \
-  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ]; }; then
+  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
   args+=(--thinking-display "$DISPLAY_VALUE")
 fi
 
@@ -202,11 +241,13 @@ The same result can be achieved by using a compiled `.exe` version of the wrappe
 1. Download `claudemax.exe` from this repository's [Releases](../../releases), or build it yourself by following [Building claudemax.exe](#building-claudemaxexe).
 2. Put `claudemax.exe` somewhere stable, such as `C:\Users\YOU\.local\bin\claudemax.exe`.
 3. Open the Command Palette and select "Preferences: Open User Settings (JSON)".
-4. Add the following setting. Use double backslashes in the path.
+4. Add the following setting (the official "Claude Code" extension setting). Use double backslashes in the path.
 
    ```jsonc
-   "claudeCodeChat.executable.path": "C:\\Users\\YOU\\.local\\bin\\claudemax.exe"
+   "claudeCode.claudeProcessWrapper": "C:\\Users\\YOU\\.local\\bin\\claudemax.exe"
    ```
+
+   If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path. In a multi-root `.code-workspace`, put `claudeCode.claudeProcessWrapper` in the workspace file's `"settings"` block or in User settings, not a folder's `.vscode/settings.json`.
 
 5. Reload the VS Code window by opening the Command Palette and selecting "Developer: Reload Window".
 6. To use it in a terminal, run `claudemax.exe` in place of `claude`.
@@ -226,9 +267,9 @@ Set the variable in the same environment where Claude Code launches, such as you
 
 ### What the launcher does
 
-Claude Code already puts `--thinking adaptive`, `-p`, or `--print` on the command line when it starts a real agent run. It does not add the matching `--thinking-display` flag, so the API defaults the display to `"omitted"` and the Thinking section comes back empty.
+When Claude Code starts a real agent run it puts one of these markers on the command line: `--max-thinking-tokens N` (the current VS Code extension's budget thinking mode), `--thinking adaptive` or `enabled` (the SDK and older extensions), or `-p` / `--print` (headless). It does not add the matching `--thinking-display` flag, so the API defaults the display to `"omitted"` and the Thinking section comes back empty.
 
-The launcher inspects the arguments and, when it detects a real run, appends `--thinking-display summarized` before handing off to the real `claude` binary. See [Technical details](#technical-details) and [TECHNICAL.md](TECHNICAL.md) for more information.
+The launcher inspects the arguments and, when it detects a real run via any of those markers, appends `--thinking-display summarized` before handing off to the real `claude` binary. The official extension also launches the wrapper with the real CLI path as a leading argument (a "process wrapper" convention); the launcher detects and consumes that path so it is not forwarded as a stray positional. See [Technical details](#technical-details) and [TECHNICAL.md](TECHNICAL.md) for more information.
 
 ### Why Option 1 is recommended
 
@@ -250,6 +291,8 @@ if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)
 // to:
 if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
 ```
+
+> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; `patch-extension.sh` does this automatically. This version fragility is one reason Option 1 is preferred.
 
 ### Automatic patching on Linux, macOS, WSL, or Git Bash
 
@@ -368,14 +411,16 @@ else if (!p6() && EK8())                     // isInteractive && showThinkingSum
     pz.display = "summarized";
 ```
 
-The setting-to-display mapping is gated on `isInteractive`. The VS Code extension launches the CLI non-interactively with `--input-format stream-json`, so that branch never runs. The extension only forwards `--thinking-display` when its own `display` value is already set:
+The setting-to-display mapping is gated on `isInteractive`. The VS Code extension launches the CLI non-interactively with `--input-format stream-json`, so that branch never runs. The extension only forwards `--thinking-display` when its own `display` value is already set (the array variable is minified, shown here as `q`, as in extension 2.1.16x):
 
 ```js
 // extension.js, simplified:
-if (l.type !== "disabled" && l.display) B.push("--thinking-display", l.display);
+if (l.type !== "disabled" && l.display) q.push("--thinking-display", l.display);
 ```
 
 `l.display` is never populated from `showThinkingSummaries`; the literal string `"summarized"` appears zero times in `extension.js`. The result on the extension and headless paths is that `display` is never sent, the API omits summaries, and the Thinking section is empty even with `showThinkingSummaries: true`.
+
+The current extension signals a real run on the VS Code path with `--max-thinking-tokens <budgetTokens>` (its budget thinking mode) rather than `--thinking adaptive`, and it launches a configured `claudeProcessWrapper` with the real CLI path as a leading argument. Both matter for the launcher: it triggers on `--max-thinking-tokens` and strips the leading binary path.
 
 The ungated lever is the `--thinking-display summarized` CLI flag, which works headless. Each fix in this repository forces that flag, or the equivalent request field, to be present.
 
@@ -387,14 +432,16 @@ The ungated lever is the `--thinking-display summarized` CLI flag, which works h
 | `claude -p` / headless / SDK | Ignored because it is non-interactive | Works |
 | VS Code extension | Ignored because it is non-interactive and never mapped | Works, but the extension does not send it by default |
 
+> On the VS Code path the current extension signals a real run with `--max-thinking-tokens`, not `--thinking adaptive`, and launches the wrapper with the real CLI path as a leading argument. The launcher handles both.
+
 ### How each option applies the lever
 
-* **Option 1: Launcher.** Appends `--thinking-display summarized` to the arguments before executing the real CLI. It operates outside the app, survives updates, and covers VS Code plus headless runs.
-* **Option 2: Patch.** Changes the extension so it always forwards the flag with `l.display || "summarized"`. It modifies the bundle, is wiped by updates, and fixes VS Code only.
+* **Option 1: Launcher.** Appends `--thinking-display summarized` to the arguments before executing the real CLI, triggering on `--max-thinking-tokens` (nonzero), `--thinking adaptive`/`enabled`, or `-p`/`--print`, and stripping the leading real-binary path the official extension passes. It operates outside the app, survives updates, and covers VS Code plus headless runs.
+* **Option 2: Patch.** Changes the extension so it always forwards the flag with `l.display || "summarized"`. It modifies the bundle, is wiped by updates, is fragile against the minified variable rename (`B`, `q`, ...), and fixes VS Code only.
 * **Option 3: Proxy.** Sets `body.thinking.display = "summarized"` on the wire for every `/v1/messages` request. It is surface-agnostic.
 
 For the live A/B confirmation, deeper design notes, proxy security model, and notes on summary length versus effort level, see [TECHNICAL.md](TECHNICAL.md).
 
 ## Confirmation
 
-Confirmed on Opus 4.7 and Opus 4.8 with native-installer CLI `2.1.166` and VS Code extension `2.1.165` / `2.1.167`, on Windows 11 and Ubuntu 24.04. Behavior may change in future Claude Code releases.
+Confirmed on Opus 4.7 and Opus 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04. Earlier builds (`2.1.165` / `2.1.167`) signaled thinking with `--thinking adaptive`; `2.1.169` uses `--max-thinking-tokens` on the VS Code path. Behavior may change in future Claude Code releases.
