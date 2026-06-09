@@ -42,13 +42,25 @@ if [ "${#TARGETS[@]}" -eq 0 ]; then
 fi
 
 python3 - "$MODE" "${TARGETS[@]}" <<'PY'
-import sys, time, glob, os
+import sys, time, glob, os, re
 
 mode = sys.argv[1]
 targets = sys.argv[2:]
 
-OLD = 'if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)'
-NEW = 'if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")'
+# The extension is minified, and the array variable that collects CLI flags is
+# named differently across builds (B in 2.0.x, q in 2.1.16x, ...). Match it with
+# a capture group instead of a fixed literal so the patch survives the rename.
+PAT = re.compile(
+    r'if\(l\.type!=="disabled"&&l\.display\)([A-Za-z_$][\w$]*)\.push\("--thinking-display",l\.display\)'
+)
+# Already-patched form (gate dropped, default added), any variable name.
+PATCHED = re.compile(
+    r'if\(l\.type!=="disabled"\)([A-Za-z_$][\w$]*)\.push\("--thinking-display",l\.display\|\|"summarized"\)'
+)
+
+def patched_form(m):
+    var = m.group(1)
+    return f'if(l.type!=="disabled"){var}.push("--thinking-display",l.display||"summarized")'
 
 def revert(path):
     baks = sorted(glob.glob(path + ".bak.*"))
@@ -68,22 +80,22 @@ for path in targets:
         revert(path)
         continue
 
-    if NEW in src:
+    if PATCHED.search(src):
         print("  [skip] already patched")
         continue
-    if OLD not in src:
+    count = len(PAT.findall(src))
+    if count == 0:
         print("  [skip] target string not found (extension layout changed?) "
               "- inspect manually before patching")
         continue
 
-    count = src.count(OLD)
     if mode == "--dry-run":
         print(f"  [dry-run] would replace {count} occurrence(s)")
         continue
 
     bak = f"{path}.bak.{int(time.time())}"
     open(bak, "w", encoding="utf-8", errors="surrogatepass").write(src)
-    patched = src.replace(OLD, NEW)
+    patched = PAT.sub(patched_form, src)
     open(path, "w", encoding="utf-8", errors="surrogatepass").write(patched)
     print(f"  [ok] patched {count} occurrence(s); backup: {os.path.basename(bak)}")
 
