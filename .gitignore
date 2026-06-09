@@ -5,6 +5,10 @@
 # Node
 node_modules/
 
+# Python bytecode (e.g. from running fix-context-icon.py)
+__pycache__/
+*.pyc
+
 # Editor / OS noise
 *.bak.*
 *.orig

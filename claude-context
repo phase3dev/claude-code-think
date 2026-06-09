@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
-# claudemax - Claude Code launcher that combines TWO unofficial fixes:
+# claude-context - Claude Code launcher that restores the always-visible
+# context-usage icon in the VS Code chat input.
 #
-#   1. Restores extended-thinking summaries on Opus 4.7 / 4.8, where the
-#      "Thinking" section otherwise renders empty in the VS Code extension and
-#      headless -p/SDK. Done by injecting `--thinking-display summarized` into the
-#      launch args - the one lever that is NOT interactivity-gated. Edits nothing.
-#   2. Restores the always-visible context-usage icon in the VS Code chat input.
-#      Recent extension builds (2.1.165+) hide that icon until you have used
-#      >50% of the context window; with the 1M window that is ~500k tokens, so it
-#      is effectively never shown. There is no env/CLI lever for this, so (unlike
-#      fix #1) this wrapper idempotently patches the extension's webview bundle on
-#      each launch, flipping the threshold so the icon shows at any usage level.
-#      Because it re-applies every launch, it survives extension updates.
+# Recent extension builds (2.1.165+) hide that icon until you have used >50% of
+# the context window; with the 1M context window that is ~500k tokens, so it is
+# effectively never shown. There is no env/CLI lever for this, so this wrapper
+# idempotently patches the extension's webview bundle on each launch, flipping
+# the threshold so the icon shows at any usage level. Because it re-applies every
+# launch, it survives extension updates.
 #
-# This is the "both fixes" variant. For thinking-only use `claude-think`; for the
-# context-icon fix alone use `claude-context`. All three are drop-in process
-# wrappers and differ only in what they inject/patch.
+# Context-icon-only variant. For the thinking-summaries fix too, use `claudemax`
+# (both fixes combined); for thinking alone, use `claude-think`. All three are
+# drop-in process wrappers and differ only in what they inject/patch.
 #
-# NOTE: unlike fix #1, fix #2 DOES edit the extension's bundled webview/index.js.
-# That edit is idempotent, backed up once to index.js.bak-context-icon, written
-# atomically (a failed write leaves the original untouched), best-effort (it never
-# blocks the launch), and toggle-able with CC_PATCH_CONTEXT_ICON=0.
+# NOTE: this DOES edit the extension's bundled webview/index.js. That edit is
+# idempotent, backed up once to index.js.bak-context-icon, written atomically (a
+# failed write leaves the original untouched), best-effort (it never blocks the
+# launch), and toggle-able with CC_PATCH_CONTEXT_ICON=0.
 #
 # Use it:
 #   - VS Code (official "Claude Code" extension): set "claudeCode.claudeProcessWrapper"
@@ -28,14 +24,18 @@
 #     .code-workspace this setting is window-scoped, so put it in the workspace
 #     file's "settings" block (or User settings), not a folder .vscode/settings.json.
 #   - VS Code (third-party "Claude Code Chat"): set "claudeCodeChat.executable.path".
-#   - Terminal: run `claudemax` in place of `claude`.
+#   - Terminal: run `claude-context` in place of `claude`.
+#
+# First-run note: the wrapper patches index.js on disk when the CLI is spawned,
+# which can be AFTER the webview already loaded the old bundle. So the first time
+# you enable this you may need two reloads: reload (the spawn patches the file),
+# then reload again (the webview loads the patched bundle). Subsequent windows
+# and post-update launches are already patched on disk.
 #
 # Toggle off:
-#   export CC_THINKING_DISPLAY=omitted      # hide thinking summaries
 #   export CC_PATCH_CONTEXT_ICON=0          # leave the extension webview untouched
 #
 # Default:
-#   CC_THINKING_DISPLAY=summarized
 #   CC_PATCH_CONTEXT_ICON=1
 #
 # The real `claude` must be installed. This wrapper finds it automatically; if it
@@ -52,7 +52,7 @@ self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 # args. <REAL_CLAUDE...> is either a single native-binary path (".../claude") or
 # a node interpreter followed by the bundled cli.js (".../node .../cli.js").
 # Peel that off so it is not forwarded as a stray positional argument, and
-# prefer it as the real claude. (Plain "claudemax <args>" use is unaffected:
+# prefer it as the real claude. (Plain "claude-context <args>" use is unaffected:
 # <args> never begins with an existing claude/node binary path.)
 wrapper_bin=""
 if [ "$#" -gt 0 ] \
@@ -90,93 +90,15 @@ if [ -z "$REAL_CLAUDE" ]; then
 fi
 
 [ -n "$REAL_CLAUDE" ] || {
-  echo "claudemax: could not find the real 'claude' binary; set CLAUDE_REAL_BIN" >&2
+  echo "claude-context: could not find the real 'claude' binary; set CLAUDE_REAL_BIN" >&2
   exit 1
 }
 
-# --- Behavior ---------------------------------------------------------------
-
-# Set CC_THINKING_DISPLAY=omitted to hide thinking; default shows summaries.
-DISPLAY_VALUE="${CC_THINKING_DISPLAY:-summarized}"
-
-# --- Optional customizations ------------------------------------------------
-#
-# Raise reasoning effort - longer, more detailed summaries. Uses more tokens:
-#   export CLAUDE_CODE_EFFORT_LEVEL="${CLAUDE_CODE_EFFORT_LEVEL:-xhigh}"
-#
-# Auto mode - let a classifier pick the effort level per task. This is an
-# ALTERNATIVE to a fixed effort level above (when auto mode is on, a fixed
-# CLAUDE_CODE_EFFORT_LEVEL may be ignored). Another frequently-requested feature:
-#   export CLAUDE_CODE_ENABLE_AUTO_MODE="${CLAUDE_CODE_ENABLE_AUTO_MODE:-1}"
-#
-# Longer network timeout for large requests:
-#   export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"
-
-# --- Inject the thinking-display fix into the launch args -------------------
-#
-# Fire on a real agent invocation. Surfaces signal a real run differently:
-#   - the VS Code extension passes "--max-thinking-tokens N" (N > 0) plus the
-#     stream-json I/O flags, and does NOT pass "--thinking adaptive" or "-p";
-#   - the SDK / older extensions pass "--thinking adaptive" (or "enabled");
-#   - headless passes "-p" / "--print".
-#
-# Skip injection when:
-#   - thinking is explicitly disabled
-#   - --thinking-display is already present (no double-inject vs a patched extension)
-#   - CC_THINKING_DISPLAY=omitted
-#   - the command is a subcommand/probe such as mcp, config, or --version,
-#     which carries none of these markers
-
-args=("$@")
-have_display=false
-thinking_adaptive=false
-thinking_disabled=false
-print_mode=false
-max_thinking_on=false
-prev=""
-
-for a in "$@"; do
-  case "$a" in
-    --thinking-display)
-      have_display=true
-      ;;
-    -p|--print)
-      print_mode=true
-      ;;
-  esac
-
-  if [ "$prev" = "--thinking" ]; then
-    case "$a" in
-      adaptive|enabled)
-        thinking_adaptive=true
-        ;;
-      disabled)
-        thinking_disabled=true
-        ;;
-    esac
-  fi
-
-  if [ "$prev" = "--max-thinking-tokens" ] && [ "$a" != "0" ]; then
-    max_thinking_on=true
-  fi
-
-  prev="$a"
-done
-
-if [ "$have_display" = false ] \
-  && [ "$thinking_disabled" = false ] \
-  && [ "$DISPLAY_VALUE" != "omitted" ] \
-  && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
-  args+=(--thinking-display "$DISPLAY_VALUE")
-fi
-
 # --- Restore the always-visible context-usage icon (patches the webview) ----
 #
-# Unlike the thinking-display fix above, this one DOES edit the extension's
-# bundled webview - there is no env/CLI lever for it. It is best-effort and must
-# never block the launch: every step is guarded, writes go through a temp file
-# with an atomic rename (a failed write leaves the original untouched), and the
-# whole thing runs under `|| true`.
+# Best-effort and must never block the launch: every step is guarded, writes go
+# through a temp file with an atomic rename (a failed write leaves the original
+# untouched), and the whole routine runs under `|| true`.
 #
 # What it changes - component `FJe` in webview/index.js:
 #   if(c>=50)return null   ->   if(c>=101)return null
@@ -242,6 +164,6 @@ if [ "$CC_PATCH_CONTEXT_ICON" != "0" ]; then
   _cc_restore_context_icon || true
 fi
 
-# The `${args[@]+...}` form guards the empty-array case under `set -u`,
-# including older Bash versions such as the default Bash on older macOS systems.
-exec "$REAL_CLAUDE" ${args[@]+"${args[@]}"}
+# The `${@+...}` form guards the empty-args case under `set -u`, including older
+# Bash versions such as the default Bash on older macOS systems.
+exec "$REAL_CLAUDE" ${@+"$@"}
