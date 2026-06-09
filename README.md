@@ -1,18 +1,16 @@
 # claude-code-workarounds
 
-Unofficial community workarounds for Claude Code. Each entry below is an independent fix with its own scripts and detailed section, so use only what you need.
+Unofficial community workarounds for Claude Code. Each entry below is an independent fix with its own scripts and detailed section.
 
-Whether the behaviors below are intentional or bugs is outside the scope of this repository. These are unofficial community workarounds, not affiliated with or endorsed by Anthropic. A future Claude Code update could make any of them obsolete. Use them at your own discretion.
-
-> This repository was formerly named `claude-code-think` (thinking-summaries fix only). It was renamed as more fixes were added; GitHub redirects the old URL, so existing links keep working.
+Not affiliated with or endorsed by Anthropic. A future Claude Code update could make any of the included workarounds obsolete. Use them at your own discretion.
 
 ## Workarounds
 
-1. **Empty thinking summaries (Opus 4.7 / 4.8)** - updated 2026-06-08
+1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-08].
    Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via a launcher (recommended), a one-line extension patch, or a local proxy.
    -> [details](#workaround-1-thinking-summaries)
 
-2. **Missing context-usage icon (1M context window)** - updated 2026-06-08
+2. **Missing context-usage icon (1M context window)** [updated 2026-06-08].
    The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via a launcher that re-patches the webview on each launch, or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
