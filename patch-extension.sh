@@ -27,7 +27,10 @@ BASE_DIRS=(
   "$HOME/.config/Code/User/extensions"
 )
 
-mapfile -t TARGETS < <(
+TARGETS=()
+while IFS= read -r target; do
+  TARGETS+=("$target")
+done < <(
   for b in "${BASE_DIRS[@]}"; do
     [ -d "$b" ] || continue
     # Match any arch/platform build (e.g. -linux-x64, -darwin-arm64, -win32-x64).

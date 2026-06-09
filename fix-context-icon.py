@@ -22,14 +22,16 @@ icon is visible whenever a context window is known (t>0), at any usage level.
 
     if(c>=50)return null   ->   if(c>=101)return null   (c maxes at 100, so never hides)
 
-The (t===0) guard is left intact, so nothing is shown before the first response
-sets the context window. After the first turn the icon stays visible.
+The (t===0) guard is left intact. In a resumed window, the webview can still show
+a transient 0% before the first fresh response updates context metadata. After
+that first response the icon stays visible.
 
 SAFE & REVERSIBLE
 -----------------
 * Backs up each file once to  index.js.bak-context-icon  before editing.
-* Writes in place (truncate-in-place) so file OWNER/permissions are preserved
-  even when this runs as root against a user-owned file.
+* Writes through a same-directory temp file and atomic replace. Owner/group/mode
+  are copied back onto the temp file before replacement, preserving root-patches
+  against user-owned installs while avoiding truncate-in-place corruption.
 * Idempotent: re-running detects an already-patched file and does nothing.
 * No integrity/hash check exists on the webview bundle, so the edit loads fine.
 
@@ -46,7 +48,9 @@ Command Palette -> "Developer: Reload Window".
 """
 import glob
 import os
+import shutil
 import sys
+import tempfile
 
 OLD = ">=50)return null}"
 NEW = ">=101)return null}"
@@ -70,10 +74,30 @@ def discover():
     return sorted(found)
 
 
-def write_in_place(path, text):
-    """Truncate-in-place write: preserves the file's owner/group/mode."""
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
+def write_atomic_preserving_metadata(path, text):
+    """Atomic same-directory replacement that preserves owner/group/mode."""
+    st = os.stat(path)
+    directory = os.path.dirname(path) or "."
+    basename = os.path.basename(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{basename}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except (AttributeError, PermissionError, OSError):
+            pass
+        shutil.copystat(path, tmp)
+        os.replace(tmp, path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
 
 
 def patch_file(path):
@@ -90,7 +114,7 @@ def patch_file(path):
     if not os.path.exists(backup):
         with open(backup, "w", encoding="utf-8", newline="") as b:
             b.write(data)
-    write_in_place(path, data.replace(OLD, NEW, 1))
+    write_atomic_preserving_metadata(path, data.replace(OLD, NEW, 1))
     return "PATCHED"
 
 
@@ -100,7 +124,7 @@ def revert_file(path):
         return "no-backup"
     with open(backup, "r", encoding="utf-8", newline="") as b:
         data = b.read()
-    write_in_place(path, data)
+    write_atomic_preserving_metadata(path, data)
     return "REVERTED"
 
 

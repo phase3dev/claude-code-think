@@ -75,6 +75,97 @@ function findClaude() {
   return null;
 }
 
+function findExecutableOnPath(name) {
+  const lookup = process.platform === "win32" ? "where" : "which";
+  try {
+    const out = execFileSync(lookup, [name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const hit = out
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .find((s) => s && fs.existsSync(s));
+    if (hit) return hit;
+  } catch (_) {
+    /* not on PATH */
+  }
+  return null;
+}
+
+function expandShimPath(raw, shimDir) {
+  let s = raw.trim().replace(/^["']|["']$/g, "");
+  s = s.replace(/%~?dp0%?/gi, shimDir + path.sep);
+  s = s.replace(/%([^%]+)%/g, (m, name) => process.env[name] || m);
+  return path.isAbsolute(s) ? s : path.resolve(shimDir, s);
+}
+
+function resolveShimEntrypoint(shim) {
+  const shimDir = path.dirname(path.resolve(shim));
+  const candidates = [
+    path.join(shimDir, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
+    path.resolve(shimDir, "..", "@anthropic-ai", "claude-code", "cli.js"),
+    path.resolve(
+      shimDir,
+      "..",
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "cli.js"
+    ),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  try {
+    const data = fs.readFileSync(shim, "utf8");
+    const matches = data.matchAll(
+      /(?:"([^"]+?\.js)"|'([^']+?\.js)'|([^\s"']+?\.js))/gi
+    );
+    for (const m of matches) {
+      const hit = expandShimPath(m[1] || m[2] || m[3], shimDir);
+      if (fs.existsSync(hit)) return hit;
+    }
+  } catch (_) {
+    /* unreadable shim */
+  }
+  return null;
+}
+
+function resolveNodeForShim(shim) {
+  const shimDir = path.dirname(path.resolve(shim));
+  const candidates = [
+    process.env.CC_NODE_BIN,
+    path.join(shimDir, "node.exe"),
+    path.join(shimDir, "node"),
+    process.pkg ? null : process.execPath,
+    findExecutableOnPath("node"),
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+function resolveClaudeInvocation(command, args) {
+  if (!/\.(cmd|bat)$/i.test(command)) return { command, args };
+  const cli = resolveShimEntrypoint(command);
+  const node = resolveNodeForShim(command);
+  if (cli && node) return { command: node, args: [cli, ...args] };
+  console.error(
+    "claude-think: refusing to launch unresolved .cmd/.bat shim without a shell; set CLAUDE_REAL_BIN to claude.exe or CC_NODE_BIN to node.exe"
+  );
+  return null;
+}
+
+function normalizeDisplayValue(value) {
+  if (value === "summarized" || value === "omitted") return value;
+  console.error(
+    `claude-think: invalid CC_THINKING_DISPLAY=${value}; using summarized`
+  );
+  return "summarized";
+}
+
 // Process-wrapper convention: the official VS Code extension invokes the wrapper
 // as  <wrapper> <REAL_CLAUDE...> <args...>, passing the real CLI ahead of the
 // args. <REAL_CLAUDE...> is either a single native-binary path (".../claude.exe")
@@ -119,7 +210,9 @@ if (!claude) {
 
 // --- Behavior --------------------------------------------------------------
 // Set CC_THINKING_DISPLAY=omitted to hide thinking; default shows summaries.
-const displayValue = process.env.CC_THINKING_DISPLAY || "summarized";
+const displayValue = normalizeDisplayValue(
+  process.env.CC_THINKING_DISPLAY || "summarized"
+);
 
 // --- Optional customizations -----------------------------------------------
 //
@@ -150,8 +243,18 @@ let haveDisplay = false,
   maxThinkingOn = false;
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === "--thinking-display") haveDisplay = true;
+  if (a === "--thinking-display" || a.startsWith("--thinking-display=")) {
+    haveDisplay = true;
+  }
   if (a === "-p" || a === "--print") printMode = true;
+  if (a === "--thinking=adaptive" || a === "--thinking=enabled") {
+    thinkingAdaptive = true;
+  }
+  if (a === "--thinking=disabled") thinkingDisabled = true;
+  if (a.startsWith("--max-thinking-tokens=")) {
+    const v = a.slice("--max-thinking-tokens=".length);
+    if (v && v !== "0") maxThinkingOn = true;
+  }
   if (a === "--max-thinking-tokens") {
     const v = argv[i + 1];
     if (v && v !== "0") maxThinkingOn = true;
@@ -171,11 +274,11 @@ if (
   args.push("--thinking-display", displayValue);
 }
 
-// .cmd/.bat (npm install) need a shell; .exe (native install) is exec'd directly.
-const useShell = /\.(cmd|bat)$/i.test(claude);
-const res = spawnSync(claude, args, {
+const invocation = resolveClaudeInvocation(claude, args);
+if (!invocation) process.exit(1);
+const res = spawnSync(invocation.command, invocation.args, {
   stdio: "inherit",
   env: process.env,
-  shell: useShell,
+  shell: false,
 });
 process.exit(res.status == null ? 1 : res.status);

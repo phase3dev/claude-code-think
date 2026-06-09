@@ -8,6 +8,7 @@ node_modules/
 # Python bytecode (e.g. from running fix-context-icon.py)
 __pycache__/
 *.pyc
+*.py[cod]
 
 # Editor / OS noise
 *.bak.*
