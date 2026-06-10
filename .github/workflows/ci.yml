@@ -32,12 +32,27 @@ jobs:
 
       - name: Node syntax check (node --check)
         run: |
-          for f in launcher/claudemax.win.js fixes/thinking-summaries/proxy.js; do
+          for f in launcher/claudemax.win.js fixes/thinking-summaries/proxy.js fixes/markdown-copy-export/webview-inject.js; do
             node --check "$f"
           done
 
       - name: Python compile
-        run: python3 -m py_compile fixes/context-icon/fix-context-icon.py tests/test_regressions.py tests/test_reconcile.py
+        run: >
+          python3 -m py_compile
+          fixes/context-icon/fix-context-icon.py
+          fixes/markdown-copy-export/cc-export.py
+          fixes/markdown-copy-export/add-md-copy.py
+          tools/gen-embeds
+          tests/test_regressions.py tests/test_reconcile.py
+          tests/test_md_export.py tests/test_md_converter.py tests/test_md_inject.py
+          tests/test_md_patcher.py tests/test_gen_embeds.py
+
+      - name: Embed drift check
+        # The launcher + standalone patcher carry a generated copy of the md-copy
+        # webview payload. --strict fails the build if any of the three consumers is
+        # missing its embed region (so a vanished region can't pass silently); --check
+        # fails if a present region drifts from the single source.
+        run: python3 tools/gen-embeds --check --strict
 
       - name: Regression tests
         run: python3 -m unittest discover -s tests -v
