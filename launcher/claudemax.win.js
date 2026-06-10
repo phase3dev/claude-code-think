@@ -14,14 +14,17 @@
 //      launch, flipping the threshold so the icon shows at any usage level.
 //      Because it re-applies every launch, it survives extension updates.
 //
-// This is the "both fixes" variant. For thinking-only use claude-think.exe; for
-// the context-icon fix alone use claude-context.exe. All three are drop-in
-// process wrappers and differ only in what they inject/patch.
+// This single launcher carries every fix, each independently switchable by an
+// environment variable (all on by default). For thinking only, set
+// CC_PATCH_CONTEXT_ICON=0; for the context-icon fix only, set
+// CC_THINKING_DISPLAY=omitted.
 //
 // NOTE: unlike fix #1, fix #2 DOES edit the extension's bundled webview/index.js.
-// That edit is idempotent, backed up once to index.js.bak-context-icon, written
-// via a temp file + rename, best-effort (it never blocks the launch), and
-// toggle-able with CC_PATCH_CONTEXT_ICON=0.
+// That edit is idempotent and ownership-marked, snapshotted once to
+// index.js.bak-cc-workarounds (emergency restore only), written via a temp file +
+// rename, best-effort (it never blocks the launch), reconciled per file every
+// launch, and toggle-able with CC_PATCH_CONTEXT_ICON=0 (or CC_WORKAROUNDS=0 /
+// CC_RECONCILE=0).
 //
 // Use it: set the official "Claude Code" extension's "claudeCode.claudeProcessWrapper"
 // setting (or the third-party "Claude Code Chat" extension's
@@ -34,6 +37,8 @@
 // Toggle off:
 //   set CC_THINKING_DISPLAY=omitted    hide thinking summaries (default: summarized)
 //   set CC_PATCH_CONTEXT_ICON=0        leave the extension webview untouched (default: 1)
+//   set CC_WORKAROUNDS=0               master: disable every fix (default: 1)
+//   set CC_RECONCILE=0                 do not touch the webview bundle (default: 1)
 //
 // The real `claude` must be installed. This wrapper finds it automatically
 // (native install `claude.exe` or npm `claude.cmd`); if it cannot, set the
