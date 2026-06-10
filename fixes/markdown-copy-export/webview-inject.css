@@ -1,0 +1,54 @@
+.cc-md-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.cc-md-copy-btn,
+.cc-md-copy-caret {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 6px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.cc-md-copy-btn:hover,
+.cc-md-copy-caret:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
+.cc-md-copy-menu {
+  position: relative;
+  margin-left: 4px;
+  padding: 2px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
+  border-radius: 4px;
+  z-index: 5;
+}
+.cc-md-copy-feedback {
+  margin-left: 6px;
+  font-size: 11px;
+  opacity: 0.85;
+  color: var(--vscode-foreground);
+}
+.cc-md-copy-conversation {
+  position: fixed;
+  right: 16px;
+  bottom: 56px;
+  z-index: 10;
+  padding: 2px;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border, transparent);
+  border-radius: 6px;
+  opacity: 0.85;
+}
+.cc-md-copy-conversation:hover {
+  opacity: 1;
+}
