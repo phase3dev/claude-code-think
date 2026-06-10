@@ -309,7 +309,10 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
  * Additive and read-only w.r.t. app state; keyed on stable CSS-module class
  * prefixes, so it fails safe (controls simply do not appear) if a prefix moves.
  * Exposes its pure functions for node unit tests; boot()s only in a real webview. */
-(function () {
+/* Leading ';' so that, appended after the bundle, this IIFE can never be parsed as
+ * a call on the bundle's final expression if it lacks a trailing semicolon (ASI
+ * safety across extension builds). */
+;(function () {
   "use strict";
 
   var CONTROL_PREFIX = "cc-md-copy"; // every injected node's class starts with this
