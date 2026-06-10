@@ -212,8 +212,9 @@ fi
 # Generic engine (replaces the single hard-coded context-icon sed). Each
 # bundle-patch feature registers, per target file, an idempotent + reversible
 # (apply, undo) pair. Every applied edit carries an ownership MARKER, and undo
-# keys off the MARKED form only, so the launcher reverses ONLY its own edits and
-# never touches upstream code that merely resembles a patched value.
+# keys off our own fingerprints (the MARKER, plus any legacy unmarked form an
+# older version of this tool wrote), so the launcher reverses ONLY its own edits
+# and never touches upstream code that merely resembles a patched value.
 #
 # Per-file reconcile (see TECHNICAL.md "patch composition"):
 #   C = current bytes with every KNOWN feature's undo applied in REVERSE order
@@ -266,10 +267,18 @@ _cc_apply_context_icon() {
 }
 
 _cc_undo_context_icon() {
+  # Revert our edit to the pristine upstream form. Two ownership fingerprints are
+  # recognized: the current MARKED form, and the legacy BARE form that older
+  # launcher/standalone versions wrote before the marker existed. `>=101)return
+  # null}` is dead upstream code (c maxes at 100), so it appears only as our own
+  # output; adopting it lets a legacy install revert and upgrade cleanly instead
+  # of warning on every launch. The MARKED substitution runs first because the
+  # bare string is a prefix of the marked one.
   local f="$1" tmp
-  if ! grep -q '/\*ccwa-context-icon\*/' "$f" 2>/dev/null; then return 0; fi   # nothing of ours
+  grep -qF '>=101)return null}' "$f" 2>/dev/null || return 0   # nothing of ours
   tmp="${f}.ccundo.$$"
-  if sed 's#>=101)return null}/\*ccwa-context-icon\*/#>=50)return null}#' "$f" > "$tmp" 2>/dev/null \
+  if sed -e 's#>=101)return null}/\*ccwa-context-icon\*/#>=50)return null}#g' \
+         -e 's#>=101)return null}#>=50)return null}#g' "$f" > "$tmp" 2>/dev/null \
      && [ -s "$tmp" ]; then
     cat "$tmp" > "$f" 2>/dev/null || true
   fi

@@ -238,12 +238,14 @@ if (!claude) {
 // routine safely no-ops until the anchor here is updated.
 const ICON_OLD = ">=50)return null}";
 const ICON_MARKER = "/*ccwa-context-icon*/";
-const ICON_NEW = ">=101)return null}" + ICON_MARKER;
+const ICON_BARE = ">=101)return null}"; // legacy unmarked form (older launcher/standalone)
+const ICON_NEW = ICON_BARE + ICON_MARKER;
 
 // Bundle-patch feature registry. Each feature is idempotent (apply/undo are
 // no-ops when their target state already holds) and reversible; undo keys off
-// the ownership MARKER only, so it reverses ONLY our own edits. Order matters:
-// apply runs forward, undo runs in reverse.
+// our own fingerprints (the ownership MARKER, plus any legacy unmarked form an
+// older version wrote), so it reverses ONLY our own edits. Order matters: apply
+// runs forward, undo runs in reverse.
 function applyContextIcon(data) {
   if (data.indexOf(ICON_MARKER) !== -1) return data; // already applied
   const n = data.split(ICON_OLD).length - 1;
@@ -258,8 +260,13 @@ function applyContextIcon(data) {
 }
 
 function undoContextIcon(data) {
-  if (data.indexOf(ICON_MARKER) === -1) return data; // nothing of ours
-  return data.split(ICON_NEW).join(ICON_OLD);
+  // Revert our edit to the pristine upstream form. Two ownership fingerprints
+  // are recognized: the current MARKED form, and the legacy BARE form older
+  // versions wrote before the marker existed. ICON_BARE is dead upstream code
+  // (c maxes at 100), so it appears only as our own output; adopting it lets a
+  // legacy install revert/upgrade cleanly. Marked must go first: ICON_BARE is a
+  // prefix of ICON_NEW.
+  return data.split(ICON_NEW).join(ICON_OLD).split(ICON_BARE).join(ICON_OLD);
 }
 
 function contextIconEnabled() {
@@ -442,8 +449,12 @@ if (
   args.push("--thinking-display", displayValue);
 }
 
-// Reconcile the webview before handing off (best-effort; never throws).
-reconcile(wrapperBin);
+// Reconcile the webview before handing off (best-effort; never throws). Walk up
+// from the resolved binary - wrapperBin when the extension handed us one, else
+// the CLAUDE_REAL_BIN/autodetected `claude` - so an extension whose root sits
+// outside the HOME fallback scan is still reached (parity with the bash walk
+// from REAL_CLAUDE).
+reconcile(wrapperBin || claude);
 
 const invocation = resolveClaudeInvocation(claude, args);
 if (!invocation) process.exit(1);
