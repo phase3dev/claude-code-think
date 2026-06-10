@@ -132,8 +132,11 @@
       }
       return out;
     }
-    var _w = {nodeType:1, tagName:"DIV", childNodes:[root], className:"", getAttribute:function(){return null;}};
-    return block(_w).replace(/\n{3,}/g, "\n\n").trim();
+    // block() dispatches on each CHILD's tag, treating the passed node as a plain
+    // container. Wrap root in a one-off container so root's OWN tag is dispatched
+    // too: callers pass either the bubble container (its block children render) or
+    // a single block element like <pre>/<ul>/<table> (now handled, not flattened).
+    return block({ childNodes: [root] }).replace(/\n{3,}/g, "\n\n").trim();
   }
 
   // ---- pure helpers ----------------------------------------------------------
