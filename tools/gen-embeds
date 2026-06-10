@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""gen-embeds - embed the md-copy webview payload (single source) into each
+self-contained consumer, and check for drift.
+
+Single source: fixes/markdown-copy-export/webview-inject.js / .css
+Consumers (each carries its own embedded copy so it is independently copyable):
+  - launcher/claudemax                       (bash quoted heredocs)
+  - launcher/claudemax.win.js                (node JSON string literals)
+  - fixes/markdown-copy-export/add-md-copy.py (python base64)
+
+    python3 tools/gen-embeds            # rewrite the embed region in each consumer
+    python3 tools/gen-embeds --check    # exit nonzero if any wired consumer is stale
+
+Each consumer marks its region with comment lines containing
+`>>>CCWA-MD-COPY-EMBED>>>` and `<<<CCWA-MD-COPY-EMBED<<<`; only the lines between
+them are generated. A missing consumer file is skipped (not yet wired); a present
+file that would change is drift.
+"""
+import base64
+import json
+import os
+import pathlib
+import sys
+
+CORE = "CCWA-MD-COPY-EMBED"
+REPO = pathlib.Path(__file__).resolve().parents[1]
+SRC_DIR = REPO / "fixes" / "markdown-copy-export"
+
+TARGETS = [
+    {"path": "launcher/claudemax", "style": "bash"},
+    {"path": "launcher/claudemax.win.js", "style": "node"},
+    {"path": "fixes/markdown-copy-export/add-md-copy.py", "style": "py"},
+]
+
+
+# The runtime append markers. A payload that itself contained one of these would
+# make the apply block self-nesting and break marker-scoped undo, so reject it at
+# generation time (single source of truth for these strings is the inject README).
+APPEND_SENTINELS = ("/* cc-md-copy v1 */", "/* /cc-md-copy v1 */")
+
+
+def reject_if_sentinels(name, payload):
+    for s in APPEND_SENTINELS:
+        if s in payload:
+            raise ValueError("%s contains the append sentinel %r; rename/remove it" % (name, s))
+
+
+def load_sources():
+    js = (SRC_DIR / "webview-inject.js").read_text(encoding="utf-8")
+    css = (SRC_DIR / "webview-inject.css").read_text(encoding="utf-8")
+    reject_if_sentinels("webview-inject.js", js)
+    reject_if_sentinels("webview-inject.css", css)
+    return js, css
+
+
+def replace_region(text, core, new_inner):
+    lines = text.splitlines(keepends=True)
+    si = ei = None
+    for i, ln in enumerate(lines):
+        if (">>>%s>>>" % core) in ln:
+            si = i
+        elif ("<<<%s<<<" % core) in ln:
+            ei = i
+    if si is None or ei is None or ei <= si:
+        raise ValueError("embed region %s not found or malformed" % core)
+    inner = new_inner if new_inner.endswith("\n") else new_inner + "\n"
+    return "".join(lines[: si + 1]) + inner + "".join(lines[ei:])
+
+
+def node_block(js, css):
+    return "const MD_COPY_JS = %s;\nconst MD_COPY_CSS = %s;\n" % (
+        json.dumps(js), json.dumps(css)
+    )
+
+
+def py_block(js, css):
+    enc = lambda s: base64.b64encode(s.encode("utf-8")).decode("ascii")
+    return 'INJECT_JS = base64.b64decode("%s").decode("utf-8")\nINJECT_CSS = base64.b64decode("%s").decode("utf-8")\n' % (
+        enc(js), enc(css)
+    )
+
+
+def bash_block(js, css):
+    for delim, payload in (("CCMDCOPYJS", js), ("CCMDCOPYCSS", css)):
+        for ln in payload.splitlines():
+            if ln.strip() == delim:
+                raise ValueError("payload contains a line equal to heredoc delimiter %s" % delim)
+    return (
+        "_cc_md_copy_js() { cat <<'CCMDCOPYJS'\n%s\nCCMDCOPYJS\n}\n"
+        "_cc_md_copy_css() { cat <<'CCMDCOPYCSS'\n%s\nCCMDCOPYCSS\n}\n"
+    ) % (js.rstrip("\n"), css.rstrip("\n"))
+
+
+BLOCKS = {"bash": bash_block, "node": node_block, "py": py_block}
+
+
+def generated_text(target, js, css):
+    path = REPO / target["path"]
+    current = path.read_text(encoding="utf-8")
+    block = BLOCKS[target["style"]](js, css)
+    return current, replace_region(current, CORE, block)
+
+
+def region_count(text, core):
+    return (text.count(">>>%s>>>" % core), text.count("<<<%s<<<" % core))
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    check = "--check" in argv
+    # --strict (CI's final gate): every consumer must exist and carry exactly one
+    # embed region. Without it, a missing file or a vanished region is silently
+    # skipped, which is correct only for early, not-yet-wired phases.
+    strict = "--strict" in argv
+    js, css = load_sources()
+    drift = []
+    missing = []
+    for target in TARGETS:
+        path = REPO / target["path"]
+        if not path.exists():
+            if strict:
+                missing.append("%s (file absent)" % target["path"])
+            continue  # consumer file not present yet
+        if strict:
+            opens, closes = region_count(path.read_text(encoding="utf-8"), CORE)
+            if opens != 1 or closes != 1:
+                missing.append("%s (%d open / %d close markers, want exactly 1 each)" % (target["path"], opens, closes))
+                continue
+        try:
+            current, updated = generated_text(target, js, css)
+        except ValueError:
+            if strict:
+                missing.append("%s (embed region missing/malformed)" % target["path"])
+            continue  # file exists but has no embed region yet (not wired)
+        if check:
+            if current != updated:
+                drift.append(target["path"])
+        elif current != updated:
+            path.write_text(updated, encoding="utf-8")
+            sys.stdout.write("regenerated %s\n" % target["path"])
+    if strict and missing:
+        sys.stderr.write("gen-embeds: NOT WIRED (--strict requires all consumers): %s\n" % ", ".join(missing))
+        return 1
+    if check and drift:
+        sys.stderr.write("gen-embeds: STALE (re-run tools/gen-embeds): %s\n" % ", ".join(drift))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
