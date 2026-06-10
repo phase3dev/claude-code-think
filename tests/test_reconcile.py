@@ -339,7 +339,7 @@ class BashReconcileTests(ReconcileMixin, MdCopyReconcileMixin, unittest.TestCase
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
 
 
-class WinReconcileTests(ReconcileMixin, unittest.TestCase):
+class WinReconcileTests(ReconcileMixin, MdCopyReconcileMixin, unittest.TestCase):
     def _run(self, td, home, args=None, env_extra=None):
         cli, capture = make_fake_node_cli(td)
         shim = make_fake_cmd_shim(td, cli)
@@ -349,6 +349,9 @@ class WinReconcileTests(ReconcileMixin, unittest.TestCase):
             "USERPROFILE": str(home),
             "CLAUDE_REAL_BIN": str(shim),
             "CAPTURE_ARGS": str(capture),
+            # Default md-copy off so ReconcileMixin tests (which assert context-icon
+            # only) are unaffected; MdCopyReconcileMixin tests pass CC_PATCH_MD_COPY=1.
+            "CC_PATCH_MD_COPY": "0",
         }
         if env_extra:
             env.update(env_extra)
@@ -372,6 +375,7 @@ class WinReconcileTests(ReconcileMixin, unittest.TestCase):
                 "USERPROFILE": str(home),
                 "CLAUDE_REAL_BIN": str(shim),
                 "CAPTURE_ARGS": str(capture),
+                "CC_PATCH_MD_COPY": "0",
             }
             res = run(["node", str(LAUNCHER_WIN), "--thinking=adaptive"], env=env)
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -386,13 +390,14 @@ class ParityTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 home = pathlib.Path(td)
                 idx = make_extension(home, f"before {OLD} after")
+                css = idx.with_name("index.css")
+                css.write_text(".x{}\n", encoding="utf-8")
                 if kind == "bash":
                     fake, capture = make_fake_claude(td)
                     env = {
                         "HOME": str(home),
                         "CLAUDE_REAL_BIN": str(fake),
                         "CAPTURE_ARGS": str(capture),
-                        "CC_PATCH_MD_COPY": "0",  # parity with node until Task 12
                     }
                     res = run([str(LAUNCHER_BASH), "--max-thinking-tokens=200"], env=env)
                 else:
@@ -411,10 +416,16 @@ class ParityTests(unittest.TestCase):
                 results[kind] = (
                     idx.read_text(encoding="utf-8"),
                     captured_args(capture),
+                    css.read_text(encoding="utf-8"),
                 )
-        self.assertEqual(results["bash"][0], results["node"][0])
-        self.assertEqual(results["bash"][1], results["node"][1])
-        self.assertEqual(results["bash"][0], f"before {MARKED} after")
+        # identical bytes from both launchers, for index.js AND index.css
+        self.assertEqual(results["bash"][0], results["node"][0])  # index.js
+        self.assertEqual(results["bash"][2], results["node"][2])  # index.css
+        self.assertEqual(results["bash"][1], results["node"][1])  # injected args
+        # index.js carries the context-icon swap AND the md-copy block; css the block
+        self.assertIn(MARKED, results["bash"][0])
+        self.assertIn(MD_OPEN, results["bash"][0])
+        self.assertIn(MD_OPEN, results["bash"][2])
         self.assertEqual(
             results["bash"][1],
             ["--max-thinking-tokens=200", "--thinking-display", "summarized"],
