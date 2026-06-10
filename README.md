@@ -14,6 +14,12 @@ Not affiliated with or endorsed by Anthropic. A future Claude Code update could 
    The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via the launcher (re-patches the webview on each launch), or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
+3. **No markdown copy / export of chat** [added 2026-06-09].
+   The chat cannot copy a whole message or the whole conversation as Markdown, and
+   has no transcript export. Fix via the launcher (adds copy controls, re-applied
+   each launch), a standalone patcher, or a standalone session exporter CLI.
+   -> [details](fixes/markdown-copy-export/README.md)
+
 ## The launcher
 
 The recommended fix for everything is one small launcher that wraps the real `claude` binary. It is a drop-in process wrapper carrying every fix in this repo; each fix is on by default and independently switchable with an environment variable, so the same artifact serves "I want everything" and "I want only X" without editing code and without recompiling.
@@ -29,6 +35,7 @@ Toggles (set in the environment where Claude Code launches, then reload):
 | `CC_RECONCILE` | `1` | `0` = do not read or write the webview bundle this launch (emergency bypass). Argument injection still runs. |
 | `CC_THINKING_DISPLAY` | `summarized` | `summarized` shows extended-thinking summaries; `omitted` hides them (no injection). |
 | `CC_PATCH_CONTEXT_ICON` | `1` | `0` leaves the context-usage icon unpatched (and reverts ours on the next launch). |
+| `CC_PATCH_MD_COPY` | `1` | `0` leaves the webview without the markdown copy/export controls (and reverts ours on the next launch). |
 
 See [`launcher/README.md`](launcher/README.md) for wiring details, the VS Code env-setting how-to, and the build command.
 
@@ -45,9 +52,14 @@ The three bash launchers and three Windows launchers are gone. There is now one 
 | Old launcher | New equivalent |
 | --- | --- |
 | `claudemax` (both fixes) | `launcher/claudemax` - all fixes on (same behavior) |
-| `claude-think` (thinking only) | `launcher/claudemax` with `CC_PATCH_CONTEXT_ICON=0` |
-| `claude-context` (context icon only) | `launcher/claudemax` with `CC_THINKING_DISPLAY=omitted` |
+| `claude-think` (thinking only) | `launcher/claudemax` with `CC_PATCH_CONTEXT_ICON=0` (and `CC_PATCH_MD_COPY=0` if you do not want the copy UI) |
+| `claude-context` (context icon only) | `launcher/claudemax` with `CC_THINKING_DISPLAY=omitted` (and `CC_PATCH_MD_COPY=0` if you do not want the copy UI) |
 | any `.exe` | the single `claudemax.exe`; scope features via `CC_*` (VS Code `claudeCode.environmentVariables`) |
+
+> The unified launcher enables **every** fix by default, including the new
+> markdown copy/export controls in the chat UI. If you do not want those controls,
+> set `CC_PATCH_MD_COPY=0` (the webview is left untouched and any prior install is
+> reverted on the next launch).
 
 Old release assets remain available for anyone pinned to a previous version.
 
@@ -309,6 +321,10 @@ Setup is otherwise identical to Option 1. This is unrelated to the fixes above.
 | [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) | thinking | Option 3 localhost proxy. Advanced and untested. |
 | [`fixes/thinking-summaries/test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
 | [`fixes/context-icon/fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
+| [`fixes/markdown-copy-export/add-md-copy.py`](fixes/markdown-copy-export/add-md-copy.py) | markdown copy | Standalone webview patcher (sentinel block, reverse-transform `--revert`). |
+| [`fixes/markdown-copy-export/cc-export.py`](fixes/markdown-copy-export/cc-export.py) | markdown copy | Standalone session exporter (markdown/text, `--open`). |
+| [`fixes/markdown-copy-export/webview-inject.js`](fixes/markdown-copy-export/webview-inject.js) | markdown copy | Single source of the appended copy-controls IIFE. |
+| [`tools/gen-embeds`](tools/gen-embeds) | markdown copy | Generates the embedded payload into the launcher + patcher; `--check` drift gate. |
 | [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis, the reconcile model, and design notes. |
 
 ## Releases
