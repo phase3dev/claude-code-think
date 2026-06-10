@@ -322,7 +322,7 @@ Setup is otherwise identical to Option 1. This is unrelated to the fixes above.
 | [`fixes/thinking-summaries/test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
 | [`fixes/context-icon/fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
 | [`fixes/markdown-copy-export/add-md-copy.py`](fixes/markdown-copy-export/add-md-copy.py) | markdown copy | Standalone webview patcher (sentinel block, reverse-transform `--revert`). |
-| [`fixes/markdown-copy-export/cc-export.py`](fixes/markdown-copy-export/cc-export.py) | markdown copy | Standalone session exporter (markdown/text, `--open`). |
+| [`fixes/markdown-copy-export/cc-export.py`](fixes/markdown-copy-export/cc-export.py) | markdown copy | Standalone session exporter (markdown or plain text). |
 | [`fixes/markdown-copy-export/webview-inject.js`](fixes/markdown-copy-export/webview-inject.js) | markdown copy | Single source of the appended copy-controls IIFE. |
 | [`tools/gen-embeds`](tools/gen-embeds) | markdown copy | Generates the embedded payload into the launcher + patcher; `--check` drift gate. |
 | [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis, the reconcile model, and design notes. |

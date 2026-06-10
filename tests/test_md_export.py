@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for cc-export.py: session resolution, markdown/text rendering, opt-in
-thinking/tools, and --open. Synthetic JSONL pins the documented row schema
-without needing a real transcript."""
+"""Tests for cc-export.py: session resolution, markdown/text rendering, and
+opt-in thinking/tools. Synthetic JSONL pins the documented row schema without
+needing a real transcript."""
 import importlib.util
 import json
 import os
 import pathlib
-import stat
 import tempfile
 import unittest
 
@@ -113,34 +112,11 @@ class CcExportTests(unittest.TestCase):
                 self.mod.resolve_session(config=str(config), cwd=str(cwd), session_id="ghost")
             )
 
-    def test_open_invokes_editor_with_resolved_path(self):
-        # Stub `code` on PATH; assert main(--open) calls it with the jsonl path.
-        with tempfile.TemporaryDirectory() as td:
-            config = pathlib.Path(td) / "config"
-            projects = config / "projects"
-            cwd = pathlib.Path(td) / "work" / "proj"
-            cwd.mkdir(parents=True)
-            key = self.mod.project_key_for_cwd(str(cwd))
-            sess = write_session(projects, key, "s1", [ROWS[0]])
-            bindir = pathlib.Path(td) / "bin"
-            bindir.mkdir()
-            capture = pathlib.Path(td) / "opened.txt"
-            code = bindir / "code"
-            code.write_text(
-                "#!/usr/bin/env bash\nprintf '%s' \"$1\" > \"$CC_OPEN_CAPTURE\"\n",
-                encoding="utf-8",
-            )
-            code.chmod(code.stat().st_mode | stat.S_IXUSR)
-            env = dict(os.environ)
-            env["PATH"] = str(bindir) + os.pathsep + env["PATH"]
-            env["CC_OPEN_CAPTURE"] = str(capture)
-            rc = self.mod.main(
-                ["--open", "--cwd", str(cwd)],
-                config=str(config),
-                env=env,
-            )
-            self.assertEqual(rc, 0)
-            self.assertEqual(capture.read_text(encoding="utf-8"), str(sess))
+    def test_open_flag_is_removed(self):
+        # The "open the raw .jsonl in the editor" feature was dropped; --open must
+        # no longer be a recognized argument (argparse exits nonzero on unknown opt).
+        with self.assertRaises(SystemExit):
+            self.mod.main(["--open"], config="/nonexistent", env=dict(os.environ))
 
     def test_fence_uses_longer_delimiter_when_body_has_backticks(self):
         # a tool/thinking payload that itself contains a ``` run must not close the
