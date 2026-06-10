@@ -106,6 +106,21 @@ case "$DISPLAY_VALUE" in
     ;;
 esac
 
+# ===== FEATURE DEFAULTS (edit to taste; environment variables override) =====
+# Master switch: 0 disables every workaround (argument injection AND bundle
+# patches) and reconcile reverts the webview to clean on this launch. When 1,
+# the per-feature toggles below govern.
+CC_WORKAROUNDS="${CC_WORKAROUNDS:-1}"
+# Emergency bundle bypass: 0 means do NOT read or write the webview bundle at all
+# this launch (argument injection is unaffected). Leaves any existing patches in
+# place without uninstalling.
+CC_RECONCILE="${CC_RECONCILE:-1}"
+# context-icon bundle patch: 0 leaves the webview's context-usage icon unpatched.
+CC_PATCH_CONTEXT_ICON="${CC_PATCH_CONTEXT_ICON:-1}"
+# (CC_THINKING_DISPLAY is handled above as DISPLAY_VALUE: summarized | omitted.)
+# (CC_PATCH_MD_COPY is added by the markdown-copy-export fix in a later PR.)
+# ============================================================================
+
 # --- Optional customizations ------------------------------------------------
 #
 # Raise reasoning effort - longer, more detailed summaries. Uses more tokens:
@@ -182,86 +197,149 @@ for a in "$@"; do
   prev="$a"
 done
 
-if [ "$have_display" = false ] \
+if [ "$CC_WORKAROUNDS" != "0" ] \
+  && [ "$have_display" = false ] \
   && [ "$thinking_disabled" = false ] \
   && [ "$DISPLAY_VALUE" != "omitted" ] \
   && { [ "$thinking_adaptive" = true ] || [ "$print_mode" = true ] || [ "$max_thinking_on" = true ]; }; then
   args+=(--thinking-display "$DISPLAY_VALUE")
 fi
 
-# --- Restore the always-visible context-usage icon (patches the webview) ----
+# --- Reconcile the webview bundle: apply enabled bundle-patch features, undo
+#     disabled ones, PER FILE, every launch ---------------------------------
 #
-# Unlike the thinking-display fix above, this one DOES edit the extension's
-# bundled webview - there is no env/CLI lever for it. It is best-effort and must
-# never block the launch: every step is guarded, writes go through a temp file
-# with an atomic rename (a failed write leaves the original untouched), and the
-# whole thing runs under `|| true`.
+# Generic engine (replaces the single hard-coded context-icon sed). Each
+# bundle-patch feature registers, per target file, an idempotent + reversible
+# (apply, undo) pair. Every applied edit carries an ownership MARKER, and undo
+# keys off the MARKED form only, so the launcher reverses ONLY its own edits and
+# never touches upstream code that merely resembles a patched value.
 #
-# What it changes - component `FJe` in webview/index.js:
-#   if(c>=50)return null   ->   if(c>=101)return null
-# `c` is "% of context remaining"; it maxes at 100, so >=101 never fires and the
-# icon renders whenever a context window is known (the t===0 "no session yet"
-# guard is left intact). Idempotent, and re-applied each launch, so an extension
-# update that reinstalls a fresh bundle is re-patched on the next launch.
+# Per-file reconcile (see TECHNICAL.md "patch composition"):
+#   C = current bytes with every KNOWN feature's undo applied in REVERSE order
+#       (the pristine bundle, regardless of which of our patches were present)
+#   D = C with every ENABLED feature's apply applied in FORWARD order
+#   write D only when it differs from the current bytes (idempotent)
 #
-# Maintenance note: the patch keys off the stable string `>=50)return null}`, not
-# the minified component name. If a future extension build changes that exact
-# substring, the routine safely no-ops (the icon goes missing again) until the
-# anchor here is updated.
+# Best-effort: every step is guarded and the whole pass runs under `|| true`, so
+# it can never block the launch. Writes go through a metadata-preserving temp
+# (`cp -p`, portable - the GNU-only `--reference` is avoided so this also works
+# on macOS/BSD) and an atomic `mv -f`; a failed step leaves the original
+# untouched.
+#
+# context-icon feature - component `FJe` in webview/index.js:
+#   if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
+# `c` is "% of context remaining" (maxes at 100), so >=101 never fires and the
+# icon renders whenever a context window is known; the t===0 "no session yet"
+# guard is left intact. The trailing /*ccwa-context-icon*/ is our ownership
+# marker. Maintenance: this keys off the stable string ">=50)return null}", not
+# the minified component name; if a future build changes that substring, apply
+# no-ops loudly (a one-line warning) until the anchor here is updated.
 
-CC_PATCH_CONTEXT_ICON="${CC_PATCH_CONTEXT_ICON:-1}"
-
-_cc_patch_index_js() {
-  local f="$1" tmp tmp2 old_count
-  [ -f "$f" ] && [ -w "$f" ] || return 0
-  if grep -q '>=101)return null}' "$f" 2>/dev/null; then return 0; fi   # already patched
-  old_count="$( (grep -o '>=50)return null}' "$f" 2>/dev/null || true) | wc -l | tr -d ' ')"
-  if [ "$old_count" != "1" ]; then return 0; fi  # absent or ambiguous (version changed)
-  if [ ! -e "$f.bak-context-icon" ]; then cp -p "$f" "$f.bak-context-icon" 2>/dev/null || true; fi
-  tmp="${f}.ccpatch.$$"
-  tmp2="${f}.ccpatch2.$$"
-  # `cp -p` preserves mode/owner portably (the GNU-only `--reference` is avoided
-  # so this also works on macOS/BSD): copy the original to a temp, sed into a
-  # second temp, copy that back over the metadata-preserving temp, then atomically
-  # replace the original. A failed/partial step leaves the original untouched.
-  cp -p "$f" "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
-  if sed 's/>=50)return null}/>=101)return null}/' "$f" > "$tmp2" 2>/dev/null \
-     && [ -s "$tmp2" ] \
-     && grep -q '>=101)return null}' "$tmp2" 2>/dev/null; then
-    cat "$tmp2" > "$tmp" && mv -f "$tmp" "$f" || true
-  fi
-  rm -f "$tmp" "$tmp2" 2>/dev/null || true
+# A bundle feature is enabled when the master switch is on AND its own toggle is
+# on. CC_WORKAROUNDS=0 forces every feature off, so reconcile reverts to clean.
+_cc_feature_enabled() {
+  [ "$CC_WORKAROUNDS" != "0" ] || return 1
+  case "$1" in
+    context-icon) [ "$CC_PATCH_CONTEXT_ICON" != "0" ] ;;
+    *) return 1 ;;
+  esac
 }
 
-_cc_restore_context_icon() {
+# apply/undo operate on a path in place. Each is a no-op when its target state is
+# already present/absent, so chaining them is safe and idempotent.
+_cc_apply_context_icon() {
+  local f="$1" tmp count
+  if grep -q '/\*ccwa-context-icon\*/' "$f" 2>/dev/null; then return 0; fi   # already marked
+  count="$( (grep -o '>=50)return null}' "$f" 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if [ "$count" = "0" ]; then
+    echo "claudemax: context-icon anchor not found in $f (extension changed?); skipping" >&2
+    return 0
+  fi
+  if [ "$count" != "1" ]; then return 0; fi   # ambiguous (version changed) - skip
+  tmp="${f}.ccapply.$$"
+  if sed 's#>=50)return null}#>=101)return null}/*ccwa-context-icon*/#' "$f" > "$tmp" 2>/dev/null \
+     && [ -s "$tmp" ] && grep -q '/\*ccwa-context-icon\*/' "$tmp" 2>/dev/null; then
+    cat "$tmp" > "$f" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+_cc_undo_context_icon() {
+  local f="$1" tmp
+  if ! grep -q '/\*ccwa-context-icon\*/' "$f" 2>/dev/null; then return 0; fi   # nothing of ours
+  tmp="${f}.ccundo.$$"
+  if sed 's#>=101)return null}/\*ccwa-context-icon\*/#>=50)return null}#' "$f" > "$tmp" 2>/dev/null \
+     && [ -s "$tmp" ]; then
+    cat "$tmp" > "$f" 2>/dev/null || true
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+# Reconcile one target file. Registry (forward apply order): context-icon.
+# md-copy appends its undo/apply calls here in its own PR.
+_cc_reconcile_index_js() {
+  local f="$1" base patched tmpmeta
+  [ -f "$f" ] && [ -r "$f" ] || return 0
+
+  base="${f}.ccbase.$$"
+  patched="${f}.ccnew.$$"
+
+  # Clean base C = current with every KNOWN feature undone, REVERSE order.
+  cp "$f" "$base" 2>/dev/null || { rm -f "$base" 2>/dev/null || true; return 0; }
+  _cc_undo_context_icon "$base"
+
+  # Desired D = C with every ENABLED feature applied, FORWARD order.
+  cp "$base" "$patched" 2>/dev/null || { rm -f "$base" "$patched" 2>/dev/null || true; return 0; }
+  if _cc_feature_enabled context-icon; then _cc_apply_context_icon "$patched"; fi
+
+  # No change -> done (the common idempotent case).
+  if cmp -s "$patched" "$f"; then rm -f "$base" "$patched" 2>/dev/null || true; return 0; fi
+
+  # One-time pristine snapshot (C) for EMERGENCY manual restore only; routine
+  # reconcile never reads it. Carry the live file's mode/owner onto it.
+  if [ ! -e "${f}.bak-cc-workarounds" ]; then
+    if cp -p "$f" "${f}.bak-cc-workarounds" 2>/dev/null; then
+      cat "$base" > "${f}.bak-cc-workarounds" 2>/dev/null || true
+    fi
+  fi
+
+  # Atomic write of D, preserving mode/owner via a cp -p temp + mv -f.
+  tmpmeta="${f}.ccwrite.$$"
+  if cp -p "$f" "$tmpmeta" 2>/dev/null && cat "$patched" > "$tmpmeta" 2>/dev/null; then
+    mv -f "$tmpmeta" "$f" 2>/dev/null || rm -f "$tmpmeta" 2>/dev/null || true
+  else
+    rm -f "$tmpmeta" 2>/dev/null || true
+  fi
+  rm -f "$base" "$patched" 2>/dev/null || true
+}
+
+_cc_reconcile() {
+  [ "$CC_RECONCILE" != "0" ] || return 0   # emergency bypass: touch nothing
   local d extdir f
-  # Most precise target: walk up from the real claude path the extension handed
-  # us (its bundled resources/native-binary/claude) to the extension root.
+  # Most precise target: walk up from REAL_CLAUDE to the extension root.
   d="$(dirname "$REAL_CLAUDE" 2>/dev/null || echo "")"
   extdir=""
   while [ -n "$d" ] && [ "$d" != "/" ] && [ "$d" != "." ]; do
-    case "${d##*/}" in
-      anthropic.claude-code-*) extdir="$d"; break ;;
-    esac
+    case "${d##*/}" in anthropic.claude-code-*) extdir="$d"; break ;; esac
     d="$(dirname "$d" 2>/dev/null || echo "")"
   done
-  if [ -n "$extdir" ]; then _cc_patch_index_js "$extdir/webview/index.js"; fi
+  if [ -n "$extdir" ]; then _cc_reconcile_index_js "$extdir/webview/index.js"; fi
 
   # Also cover any installed extension under this user's VS Code dirs (terminal
   # launches, or when the real binary is the standalone CLI). Unmatched globs
-  # fall through harmlessly - _cc_patch_index_js skips non-files.
+  # fall through harmlessly - _cc_reconcile_index_js skips non-files.
   for f in \
     "$HOME"/.vscode/extensions/anthropic.claude-code-*/webview/index.js \
     "$HOME"/.vscode-insiders/extensions/anthropic.claude-code-*/webview/index.js \
     "$HOME"/.vscode-server/extensions/anthropic.claude-code-*/webview/index.js \
     "$HOME"/.vscode-server-insiders/extensions/anthropic.claude-code-*/webview/index.js; do
-    _cc_patch_index_js "$f"
+    _cc_reconcile_index_js "$f"
   done
 }
 
-if [ "$CC_PATCH_CONTEXT_ICON" != "0" ]; then
-  _cc_restore_context_icon || true
-fi
+# Best-effort: invoking under `|| true` suspends `set -e` for the whole pass, so
+# nothing here can block the launch (matches the previous safety model).
+_cc_reconcile || true
 
 # The `${args[@]+...}` form guards the empty-array case under `set -u`,
 # including older Bash versions such as the default Bash on older macOS systems.

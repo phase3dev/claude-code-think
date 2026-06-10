@@ -37,7 +37,7 @@ jobs:
           done
 
       - name: Python compile
-        run: python3 -m py_compile fixes/context-icon/fix-context-icon.py tests/test_regressions.py
+        run: python3 -m py_compile fixes/context-icon/fix-context-icon.py tests/test_regressions.py tests/test_reconcile.py
 
       - name: Regression tests
         run: python3 -m unittest discover -s tests -v
