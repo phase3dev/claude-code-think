@@ -322,7 +322,7 @@ class ProxyRegressionTests(unittest.TestCase):
         script = textwrap.dedent(
             """
             const assert = require('assert');
-            const { headersForUpstream, headersForClient } = require('./proxy.js');
+            const { headersForUpstream, headersForClient } = require('./fixes/thinking-summaries/proxy.js');
             const inbound = {
               host: '127.0.0.1:8788',
               connection: 'keep-alive, x-remove-me',
@@ -355,13 +355,13 @@ class ProxyRegressionTests(unittest.TestCase):
 
 class PatcherRegressionTests(unittest.TestCase):
     def test_fix_context_icon_atomic_replace_preserves_metadata_and_docs_limitation(self):
-        source = (REPO / "fix-context-icon.py").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "context-icon" / "fix-context-icon.py").read_text(encoding="utf-8")
         self.assertIn("os.replace", source)
         self.assertIn("copystat", source)
         self.assertIn("transient 0%", source)
 
         spec = importlib.util.spec_from_file_location(
-            "fix_context_icon", REPO / "fix-context-icon.py"
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -392,12 +392,12 @@ class PatcherRegressionTests(unittest.TestCase):
             self.assertTrue((pathlib.Path(str(target) + mod.BACKUP_SUFFIX)).exists())
 
     def test_patch_extension_avoids_bash4_mapfile(self):
-        source = (REPO / "patch-extension.sh").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")
         self.assertNotIn("mapfile", source)
         self.assertIn("while IFS= read -r", source)
 
     def test_live_ab_script_uses_temp_files_and_optional_timeout(self):
-        source = (REPO / "test-thinking-display.sh").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "thinking-summaries" / "test-thinking-display.sh").read_text(encoding="utf-8")
         self.assertIn("mktemp", source)
         self.assertIn("trap", source)
         self.assertNotIn("/tmp/cc_t_a.jsonl", source)
