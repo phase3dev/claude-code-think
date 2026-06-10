@@ -71,7 +71,7 @@ def captured_args(path):
 class LauncherRegressionTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
     def test_bash_thinking_launchers_parse_equals_flags_and_validate_display(self):
-        for launcher in ("claude-think", "claudemax"):
+        for launcher in ("claudemax",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     fake, capture = make_fake_claude(td)
@@ -81,7 +81,7 @@ class LauncherRegressionTests(unittest.TestCase):
                         "CC_PATCH_CONTEXT_ICON": "0",
                     }
 
-                    res = run([str(REPO / launcher), "--thinking=adaptive"], env=env)
+                    res = run([str(REPO / "launcher" / launcher), "--thinking=adaptive"], env=env)
                     self.assertEqual(res.returncode, 0, res.stderr)
                     self.assertEqual(
                         captured_args(capture),
@@ -90,7 +90,7 @@ class LauncherRegressionTests(unittest.TestCase):
 
                     capture.unlink()
                     res = run(
-                        [str(REPO / launcher), "--max-thinking-tokens=123"],
+                        [str(REPO / "launcher" / launcher), "--max-thinking-tokens=123"],
                         env=env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -106,7 +106,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     capture.unlink()
                     res = run(
                         [
-                            str(REPO / launcher),
+                            str(REPO / "launcher" / launcher),
                             "--thinking",
                             "adaptive",
                             "--thinking-display=omitted",
@@ -123,7 +123,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     bad_env = dict(env)
                     bad_env["CC_THINKING_DISPLAY"] = "bogus"
                     res = run(
-                        [str(REPO / launcher), "--thinking=adaptive"],
+                        [str(REPO / "launcher" / launcher), "--thinking=adaptive"],
                         env=bad_env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -137,7 +137,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     # when a trigger like --print is present.
                     capture.unlink()
                     res = run(
-                        [str(REPO / launcher), "--print", "--thinking=disabled"],
+                        [str(REPO / "launcher" / launcher), "--print", "--thinking=disabled"],
                         env=env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -147,7 +147,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     )
 
     def test_windows_thinking_launchers_resolve_cmd_shims_without_shell(self):
-        for launcher in ("claude-think.win.js", "claudemax.win.js"):
+        for launcher in ("claudemax.win.js",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     cli, capture = make_fake_node_cli(td)
@@ -161,7 +161,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     res = run(
                         [
                             "node",
-                            str(REPO / launcher),
+                            str(REPO / "launcher" / launcher),
                             "--thinking=adaptive",
                             "literal&arg",
                             "%PATH%",
@@ -184,145 +184,13 @@ class LauncherRegressionTests(unittest.TestCase):
                         ],
                     )
 
-    @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
-    def test_bash_context_icon_launchers_skip_ambiguous_files(self):
-        launchers = ("claude-context", "claudemax")
-        for launcher in launchers:
-            with self.subTest(launcher=launcher):
-                with tempfile.TemporaryDirectory() as td:
-                    temp = pathlib.Path(td)
-                    fake, capture = make_fake_claude(td)
-                    index = (
-                        temp
-                        / ".vscode"
-                        / "extensions"
-                        / "anthropic.claude-code-test"
-                        / "webview"
-                        / "index.js"
-                    )
-                    index.parent.mkdir(parents=True)
-                    original = f"first {OLD_ICON} second {OLD_ICON}"
-                    index.write_text(original, encoding="utf-8")
-
-                    res = run(
-                        [str(REPO / launcher)],
-                        env={
-                            "HOME": str(temp),
-                            "CLAUDE_REAL_BIN": str(fake),
-                            "CAPTURE_ARGS": str(capture),
-                        },
-                    )
-                    self.assertEqual(res.returncode, 0, res.stderr)
-                    self.assertEqual(index.read_text(encoding="utf-8"), original)
-
-    @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
-    def test_bash_context_icon_launchers_patch_single_match(self):
-        for launcher in ("claude-context", "claudemax"):
-            with self.subTest(launcher=launcher):
-                with tempfile.TemporaryDirectory() as td:
-                    temp = pathlib.Path(td)
-                    fake, capture = make_fake_claude(td)
-                    index = (
-                        temp
-                        / ".vscode"
-                        / "extensions"
-                        / "anthropic.claude-code-test"
-                        / "webview"
-                        / "index.js"
-                    )
-                    index.parent.mkdir(parents=True)
-                    index.write_text(f"before {OLD_ICON} after", encoding="utf-8")
-                    index.chmod(0o640)
-
-                    res = run(
-                        [str(REPO / launcher)],
-                        env={
-                            "HOME": str(temp),
-                            "CLAUDE_REAL_BIN": str(fake),
-                            "CAPTURE_ARGS": str(capture),
-                        },
-                    )
-                    self.assertEqual(res.returncode, 0, res.stderr)
-                    self.assertEqual(
-                        index.read_text(encoding="utf-8"), f"before {NEW_ICON} after"
-                    )
-                    backup = index.with_name(index.name + ".bak-context-icon")
-                    self.assertTrue(backup.exists())
-                    self.assertEqual(stat.S_IMODE(index.stat().st_mode), 0o640)
-
-    def test_windows_context_icon_launchers_skip_ambiguous_files(self):
-        win_launchers = ("claude-context.win.js", "claudemax.win.js")
-        for launcher in win_launchers:
-            with self.subTest(launcher=launcher):
-                with tempfile.TemporaryDirectory() as td:
-                    temp = pathlib.Path(td)
-                    cli, capture = make_fake_node_cli(td)
-                    shim = make_fake_cmd_shim(td, cli)
-                    index = (
-                        temp
-                        / ".vscode"
-                        / "extensions"
-                        / "anthropic.claude-code-test"
-                        / "webview"
-                        / "index.js"
-                    )
-                    index.parent.mkdir(parents=True)
-                    original = f"first {OLD_ICON} second {OLD_ICON}"
-                    index.write_text(original, encoding="utf-8")
-
-                    res = run(
-                        ["node", str(REPO / launcher)],
-                        env={
-                            "HOME": str(temp),
-                            "USERPROFILE": str(temp),
-                            "CLAUDE_REAL_BIN": str(shim),
-                            "CAPTURE_ARGS": str(capture),
-                        },
-                    )
-                    self.assertEqual(res.returncode, 0, res.stderr)
-                    self.assertEqual(index.read_text(encoding="utf-8"), original)
-
-    def test_windows_context_icon_launchers_patch_single_match(self):
-        for launcher in ("claude-context.win.js", "claudemax.win.js"):
-            with self.subTest(launcher=launcher):
-                with tempfile.TemporaryDirectory() as td:
-                    temp = pathlib.Path(td)
-                    cli, capture = make_fake_node_cli(td)
-                    shim = make_fake_cmd_shim(td, cli)
-                    index = (
-                        temp
-                        / ".vscode"
-                        / "extensions"
-                        / "anthropic.claude-code-test"
-                        / "webview"
-                        / "index.js"
-                    )
-                    index.parent.mkdir(parents=True)
-                    index.write_text(f"before {OLD_ICON} after", encoding="utf-8")
-
-                    res = run(
-                        ["node", str(REPO / launcher)],
-                        env={
-                            "HOME": str(temp),
-                            "USERPROFILE": str(temp),
-                            "CLAUDE_REAL_BIN": str(shim),
-                            "CAPTURE_ARGS": str(capture),
-                        },
-                    )
-                    self.assertEqual(res.returncode, 0, res.stderr)
-                    self.assertEqual(
-                        index.read_text(encoding="utf-8"), f"before {NEW_ICON} after"
-                    )
-                    backup = index.with_name(index.name + ".bak-context-icon")
-                    self.assertTrue(backup.exists())
-
 
 class ProxyRegressionTests(unittest.TestCase):
     def test_proxy_exports_header_filters_that_strip_hop_by_hop_headers(self):
         script = textwrap.dedent(
             """
             const assert = require('assert');
-            const { headersForUpstream, headersForClient } = require('./proxy.js');
+            const { headersForUpstream, headersForClient } = require('./fixes/thinking-summaries/proxy.js');
             const inbound = {
               host: '127.0.0.1:8788',
               connection: 'keep-alive, x-remove-me',
@@ -355,13 +223,13 @@ class ProxyRegressionTests(unittest.TestCase):
 
 class PatcherRegressionTests(unittest.TestCase):
     def test_fix_context_icon_atomic_replace_preserves_metadata_and_docs_limitation(self):
-        source = (REPO / "fix-context-icon.py").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "context-icon" / "fix-context-icon.py").read_text(encoding="utf-8")
         self.assertIn("os.replace", source)
         self.assertIn("copystat", source)
         self.assertIn("transient 0%", source)
 
         spec = importlib.util.spec_from_file_location(
-            "fix_context_icon", REPO / "fix-context-icon.py"
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -386,18 +254,20 @@ class PatcherRegressionTests(unittest.TestCase):
             # path is verified by inspection only.
             self.assertEqual(after.st_uid, before.st_uid)
             self.assertEqual(after.st_gid, before.st_gid)
-            self.assertEqual(
-                target.read_text(encoding="utf-8"), f"before {NEW_ICON} after"
-            )
+            patched_text = target.read_text(encoding="utf-8")
+            self.assertIn("/*ccwa-context-icon*/", patched_text)
+            self.assertEqual(patched_text, f"before {mod.NEW} after")
             self.assertTrue((pathlib.Path(str(target) + mod.BACKUP_SUFFIX)).exists())
+            # Idempotent: a second patch is a no-op.
+            self.assertEqual(mod.patch_file(str(target)), "already-patched")
 
     def test_patch_extension_avoids_bash4_mapfile(self):
-        source = (REPO / "patch-extension.sh").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")
         self.assertNotIn("mapfile", source)
         self.assertIn("while IFS= read -r", source)
 
     def test_live_ab_script_uses_temp_files_and_optional_timeout(self):
-        source = (REPO / "test-thinking-display.sh").read_text(encoding="utf-8")
+        source = (REPO / "fixes" / "thinking-summaries" / "test-thinking-display.sh").read_text(encoding="utf-8")
         self.assertIn("mktemp", source)
         self.assertIn("trap", source)
         self.assertNotIn("/tmp/cc_t_a.jsonl", source)

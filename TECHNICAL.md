@@ -5,6 +5,8 @@ Full root-cause analysis and design notes behind the workarounds in the [README]
 * [Workaround 1: empty thinking summaries](#workaround-1-empty-thinking-summaries)
 * [Workaround 2: missing context-usage icon](#workaround-2-missing-context-usage-icon)
 
+Both fixes live in one launcher per platform (`launcher/claudemax` and `launcher/claudemax.win.js`), each fix independently switchable by an environment variable (see [`launcher/README.md`](launcher/README.md) for the toggle table). The node launcher compiles to a single `claudemax.exe` with `pkg` - one binary per platform carrying every fix, down from one exe per fix. The standalone per-fix tools under `fixes/` cover the non-launcher delivery paths.
+
 ---
 
 # Workaround 1: empty thinking summaries
@@ -75,7 +77,7 @@ Same prompt, run twice through a logged-in account on Opus 4.8 with `claude -p .
 | `--thinking-display summarized` | populated (hundreds of chars) |
 | no flag, `showThinkingSummaries: true` | empty (0 chars) |
 
-This proves three things: (1) `display: "summarized"` works end-to-end on 4.8, the server honors it; (2) the setting is ignored in non-interactive mode; (3) the flag is the lever. Reproduce it yourself with [`test-thinking-display.sh`](test-thinking-display.sh) (sends two small live requests; uses a few tokens).
+This proves three things: (1) `display: "summarized"` works end-to-end on 4.8, the server honors it; (2) the setting is ignored in non-interactive mode; (3) the flag is the lever. Reproduce it yourself with [`test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh) (sends two small live requests; uses a few tokens).
 
 VS Code UI was confirmed separately: after applying the Option 2 patch and reloading the window, thinking summaries render in the conversation on Opus 4.8. The fix has also been observed to survive an extension auto-update where `patch-extension.sh` had patched multiple installed versions.
 
@@ -105,7 +107,7 @@ if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
 
 The array variable (`B` here) is minified and renames between builds (`q` in 2.1.16x), so `patch-extension.sh` matches it with a capture group rather than a fixed literal and preserves whatever name the build uses. A hand edit should keep the surrounding build's variable name.
 
-[`patch-extension.sh`](patch-extension.sh) applies this idempotently across all installed Claude Code extensions (backing up each first), with `--revert` and `--dry-run`. It must be re-applied after every extension update (the install folder is replaced on upgrade), and it only fixes VS Code; headless/SDK still need Option 1.
+[`patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) applies this idempotently across all installed Claude Code extensions (backing up each first), with `--revert` and `--dry-run`. It must be re-applied after every extension update (the install folder is replaced on upgrade), and it only fixes VS Code; headless/SDK still need Option 1.
 
 Toggle idea (untested): changing the line to `l.display || (process.env.CC_THINKING_DISPLAY || "summarized")` would let a `CC_THINKING_DISPLAY=omitted` env var (e.g. in VS Code `settings.json`) hide thinking while unset/`summarized` shows it, a way to honor an on/off switch without a code change each time. Not tested.
 
@@ -119,7 +121,7 @@ The most thorough fix: a small localhost forward proxy that injects the field at
 
 Point `ANTHROPIC_BASE_URL` at the proxy and every request flows through it.
 
-What the proxy does ([`proxy.js`](proxy.js)):
+What the proxy does ([`proxy.js`](fixes/thinking-summaries/proxy.js)):
 
 1. Accept requests on `http://127.0.0.1:<port>`.
 2. For `POST /v1/messages`, parse the JSON body; if `body.thinking.type` is `"adaptive"` or `"enabled"` and `body.thinking.display` is unset, set it to the configured value (default `"summarized"`, or `"omitted"` to hide).
@@ -143,7 +145,7 @@ Status: provided as a working starting point but not extensively tested, so vali
 
 ## Compatibility
 
-Confirmed on Opus 4.7 / 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04; earlier confirmations were on `2.1.165` / `2.1.167` (which signaled thinking with `--thinking adaptive`). The CLI flag and the request field are stable levers, but the exact minified strings used by [`patch-extension.sh`](patch-extension.sh) (Option 2) can change between extension releases (e.g. the array variable `B` -> `q`); the script matches the variable generically and, if the surrounding pattern isn't found, skips and tells you to inspect manually. Options 1 and 3 don't depend on internal strings.
+Confirmed on Opus 4.7 / 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04; earlier confirmations were on `2.1.165` / `2.1.167` (which signaled thinking with `--thinking adaptive`). The CLI flag and the request field are stable levers, but the exact minified strings used by [`patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) (Option 2) can change between extension releases (e.g. the array variable `B` -> `q`); the script matches the variable generically and, if the surrounding pattern isn't found, skips and tells you to inspect manually. Options 1 and 3 don't depend on internal strings.
 
 ---
 
@@ -177,10 +179,10 @@ The `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` env var that circulates in the issue thre
 ## The fix
 
 ```text
-if(c>=50)return null   ->   if(c>=101)return null
+if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
 ```
 
-`c` is in `[0, 100]`, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard is left intact, so nothing renders before a context window is known. Using `>=101` (rather than deleting the line) is the smallest, most legible, greppable, reversible change, and it preserves the surrounding structure for a clean string substitution. The patch is anchored on the literal `>=50)return null}`, which is stable across builds even though the minified names around it are not, and which occurs exactly once in `2.1.169`.
+`c` is in `[0, 100]`, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard is left intact, so nothing renders before a context window is known. Using `>=101` (rather than deleting the line) is the smallest, most legible, greppable, reversible change, and it preserves the surrounding structure for a clean string substitution. The patch is anchored on the literal `>=50)return null}`, which is stable across builds even though the minified names around it are not, and which occurs exactly once in `2.1.169`. The trailing `/*ccwa-context-icon*/` is an ownership marker: the launcher's reconcile reverses only the marked form, so it can never corrupt upstream code that merely matches a patched value, and a pre-existing unmarked patch from an older launcher is left as-is and re-marked on the next fresh bundle.
 
 There is no integrity or subresource check on the webview bundle (the only `sha256` references in `extension.js` belong to a bundled crypto library), so an edited `index.js` loads normally.
 
@@ -195,11 +197,23 @@ The wrapper discovers `index.js` two ways:
 
 The edit is made safe:
 
-* Idempotent: skips an already-patched file, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
-* Backed up once to `index.js.bak-context-icon` before the first edit.
+* Idempotent: writes only when the recomputed bytes differ, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
+* Ownership-marked: the edit carries a `/*ccwa-context-icon*/` marker; reconcile reverses only its own marked edit and never touches upstream code that merely resembles a patched value.
 * Atomic: written to a temp file and moved into place only after it is verified non-empty and actually patched, so a failed or partial write cannot corrupt the bundle.
-* Metadata-preserving via `cp -p` (portable; the GNU-only `chmod`/`chown --reference` is avoided so it also works on macOS/BSD). The Windows launcher writes with `fs.writeFileSync` + `fs.renameSync`, inheriting the parent directory's ACLs.
+* Metadata-preserving via `cp -p` (portable; the GNU-only `chmod`/`chown --reference` is avoided so it also works on macOS/BSD). The Windows launcher writes with `fs.writeFileSync` + `fs.renameSync`, inheriting the parent directory's ACLs (it does not preserve the file mode - the one intentional bash/node asymmetry).
 * Fully guarded so it never blocks the launch (a read-only file, a renamed bundle, or a missing tool simply no-ops).
+
+### Patch composition (per-file reconcile)
+
+Every launch, for each webview file a bundle-patch feature targets, the launcher recomputes the file from scratch rather than restoring a backup:
+
+1. **Clean base C** - apply every KNOWN feature's `undo` in REVERSE registration order. Each `undo` reverses only its own ownership-marked edit and is a no-op when that marker is absent, so C is the pristine bundle regardless of which of our patches were present, and `undo` never touches code we did not write.
+2. **Desired D** - apply each ENABLED feature's `apply` to C in FORWARD order. A feature whose anchor is absent (the extension changed the string) no-ops with a one-line warning; it does not abort the file.
+3. Write D only if it differs from the current bytes (idempotent). Multiple features on one file compose without cross-clobber; toggling one off removes exactly that feature on the next launch; an extension auto-update that reinstalls a fresh bundle is simply re-applied.
+
+`CC_WORKAROUNDS=0` runs reconcile with every feature disabled, so D == C and the bundle returns to clean. `CC_RECONCILE=0` skips the whole pass (no reads/writes), leaving the bundle exactly as-is.
+
+**Emergency snapshot.** The first time a file is rewritten, a one-time whole-file pristine snapshot `index.js.bak-cc-workarounds` (= C) is written for manual restore only; routine reconcile never reads it. Because it is a whole-file image, manually restoring it is NOT composition-safe (it can clobber another feature's patch); only routine reconcile / `undo` (marker-scoped reverse transforms) composes. The standalone `fix-context-icon.py` keeps its own separate `.bak-context-icon` backup.
 
 Timing note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be *after* the webview already loaded the old bundle. So the first time you enable it you may need two reloads (the spawn patches the file, then the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
 
@@ -236,4 +250,4 @@ The pie button's `onClick` is `onCompact`: clicking the icon triggers compaction
 
 ## Compatibility
 
-Confirmed on VS Code extension `2.1.169` (native-binary CLI) on Windows 11 and Ubuntu 24.04. The `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch keys off the stable substring `>=50)return null}`, not the minified component name; if a future build changes that exact substring, the launcher safely no-ops (the icon goes missing again) until the anchor is updated. The standalone [`fix-context-icon.py`](fix-context-icon.py) applies the same change directly and supports `--revert`.
+Confirmed on VS Code extension `2.1.169` (native-binary CLI) on Windows 11 and Ubuntu 24.04. The `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch keys off the stable substring `>=50)return null}`, not the minified component name; if a future build changes that exact substring, the launcher safely no-ops (the icon goes missing again) until the anchor is updated. The standalone [`fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) applies the same change directly and supports `--revert`.

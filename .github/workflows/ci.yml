@@ -22,22 +22,22 @@ jobs:
           node-version: "20"
 
       - name: Bash syntax check (bash -n)
-        run: bash -n claude-think claude-context claudemax patch-extension.sh test-thinking-display.sh
+        run: bash -n launcher/claudemax fixes/thinking-summaries/patch-extension.sh fixes/thinking-summaries/test-thinking-display.sh
 
       - name: ShellCheck
         # ubuntu-latest ships shellcheck. Gate at warning severity: the only
         # findings are info-level SC2015 (A && B || C) notes in the launchers,
         # where the C branch firing is the intended best-effort behavior.
-        run: shellcheck --severity=warning claude-think claude-context claudemax patch-extension.sh test-thinking-display.sh
+        run: shellcheck --severity=warning launcher/claudemax fixes/thinking-summaries/patch-extension.sh fixes/thinking-summaries/test-thinking-display.sh
 
       - name: Node syntax check (node --check)
         run: |
-          for f in claude-think.win.js claude-context.win.js claudemax.win.js proxy.js; do
+          for f in launcher/claudemax.win.js fixes/thinking-summaries/proxy.js; do
             node --check "$f"
           done
 
       - name: Python compile
-        run: python3 -m py_compile fix-context-icon.py tests/test_regressions.py
+        run: python3 -m py_compile fixes/context-icon/fix-context-icon.py tests/test_regressions.py tests/test_reconcile.py
 
       - name: Regression tests
         run: python3 -m unittest discover -s tests -v

@@ -20,7 +20,7 @@ With the 1M context window, 50% used = 500,000 tokens, so the icon stays hidden
 for virtually an entire normal session. This script flips the threshold so the
 icon is visible whenever a context window is known (t>0), at any usage level.
 
-    if(c>=50)return null   ->   if(c>=101)return null   (c maxes at 100, so never hides)
+    if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/   (marked; c maxes at 100)
 
 The (t===0) guard is left intact. In a resumed window, the webview can still show
 a transient 0% before the first fresh response updates context metadata. After
@@ -53,7 +53,7 @@ import sys
 import tempfile
 
 OLD = ">=50)return null}"
-NEW = ">=101)return null}"
+NEW = ">=101)return null}/*ccwa-context-icon*/"
 BACKUP_SUFFIX = ".bak-context-icon"
 
 DISCOVERY_GLOBS = [

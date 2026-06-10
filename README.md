@@ -1,37 +1,55 @@
 # claude-code-workarounds
 
-Unofficial community workarounds for Claude Code. Each entry below is an independent fix with its own scripts and detailed section.
+Unofficial community workarounds for Claude Code. Each entry below is an independent fix, delivered through one env-toggled launcher per platform plus standalone per-fix tools.
 
 Not affiliated with or endorsed by Anthropic. A future Claude Code update could make any of the included workarounds obsolete. Use them at your own discretion.
 
 ## Workarounds
 
 1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-08].
-   Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via a launcher (recommended), a one-line extension patch, or a local proxy.
+   Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via the launcher (recommended), a one-line extension patch, or a local proxy.
    -> [details](#workaround-1-thinking-summaries)
 
 2. **Missing context-usage icon (1M context window)** [updated 2026-06-08].
-   The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via a launcher that re-patches the webview on each launch, or a standalone patcher script.
+   The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via the launcher (re-patches the webview on each launch), or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
-## Launchers at a glance
+## The launcher
 
-The recommended fix for each workaround is a small launcher that wraps the real `claude` binary. They are drop-in process wrappers that differ only in what they inject or patch. Pick the one matching the fixes you want:
+The recommended fix for everything is one small launcher that wraps the real `claude` binary. It is a drop-in process wrapper carrying every fix in this repo; each fix is on by default and independently switchable with an environment variable, so the same artifact serves "I want everything" and "I want only X" without editing code and without recompiling.
 
-| Launcher | Thinking fix | Context-icon fix | Edits the extension? |
-|---|:--:|:--:|:--:|
-| `claudemax` | yes | yes | yes (webview bundle only) |
-| `claude-think` | yes | - | no |
-| `claude-context` | - | yes | yes (webview bundle only) |
+* **Linux / macOS:** the bash script [`launcher/claudemax`](launcher/claudemax).
+* **Windows:** the compiled `claudemax.exe` on the [Releases](../../releases) page, built from [`launcher/claudemax.win.js`](launcher/claudemax.win.js).
 
-* **Linux / macOS:** the bash scripts [`claudemax`](claudemax), [`claude-think`](claude-think), [`claude-context`](claude-context).
-* **Windows:** the matching compiled `.exe` builds (`claudemax.exe`, `claude-think.exe`, `claude-context.exe`) on the [Releases](../../releases) page, built from the `*.win.js` sources.
+Toggles (set in the environment where Claude Code launches, then reload):
+
+| Env var | Default | Effect |
+| --- | --- | --- |
+| `CC_WORKAROUNDS` | `1` | Master switch. `0` disables every fix (argument injection and bundle patches) and reverts the webview to a clean bundle on launch. |
+| `CC_RECONCILE` | `1` | `0` = do not read or write the webview bundle this launch (emergency bypass). Argument injection still runs. |
+| `CC_THINKING_DISPLAY` | `summarized` | `summarized` shows extended-thinking summaries; `omitted` hides them (no injection). |
+| `CC_PATCH_CONTEXT_ICON` | `1` | `0` leaves the context-usage icon unpatched (and reverts ours on the next launch). |
+
+See [`launcher/README.md`](launcher/README.md) for wiring details, the VS Code env-setting how-to, and the build command.
 
 > Note: The interactive terminal (`claude` in a shell) already shows thinking summaries through the `showThinkingSummaries` setting and always shows the context icon. Both issues affect the VS Code extension and the headless `-p` / SDK paths.
 
 > Requirement: The real Claude Code CLI must already be installed and working. If `claude --version` prints a version, this requirement is met.
 
-> The thinking fix (`claude-think`) edits nothing. The context-icon fix (`claude-context`, `claudemax`) does edit the extension's webview bundle on disk - idempotently, with a one-time backup, an atomic write, and a toggle. See [Workaround 2](#workaround-2-context-usage-icon).
+> The thinking fix edits nothing (it injects a launch flag). The context-icon fix does edit the extension's webview bundle on disk - idempotently, with an ownership marker, an atomic write, a one-time pristine snapshot, and a toggle. See [Workaround 2](#workaround-2-context-usage-icon).
+
+## Migration from the old launchers (clean break)
+
+The three bash launchers and three Windows launchers are gone. There is now one launcher per platform: [`launcher/claudemax`](launcher/claudemax) and [`launcher/claudemax.win.js`](launcher/claudemax.win.js) (`claudemax.exe`). Update your wrapper path and, if you want a subset of fixes, set the matching `CC_*` environment variable.
+
+| Old launcher | New equivalent |
+| --- | --- |
+| `claudemax` (both fixes) | `launcher/claudemax` - all fixes on (same behavior) |
+| `claude-think` (thinking only) | `launcher/claudemax` with `CC_PATCH_CONTEXT_ICON=0` |
+| `claude-context` (context icon only) | `launcher/claudemax` with `CC_THINKING_DISPLAY=omitted` |
+| any `.exe` | the single `claudemax.exe`; scope features via `CC_*` (VS Code `claudeCode.environmentVariables`) |
+
+Old release assets remain available for anyone pinned to a previous version.
 
 ---
 
@@ -52,18 +70,16 @@ There are three workarounds:
 
 The launcher starts the real `claude` binary and appends the missing `--thinking-display summarized` flag. It does not modify Claude Code files, so it continues working after updates. The same wrapper fixes both the VS Code extension and headless CLI.
 
-Use [`claude-think`](claude-think) for the thinking fix alone, or [`claudemax`](claudemax) to also restore the context-usage icon ([Workaround 2](#workaround-2-context-usage-icon)). Setup is identical; substitute the launcher name.
-
 ### Linux / macOS (tested on Ubuntu 24.04)
 
 ```sh
 # 1. Install the launcher
 mkdir -p ~/.local/bin
-cp claude-think ~/.local/bin/claude-think     # or claudemax for both fixes
-chmod +x ~/.local/bin/claude-think
+cp launcher/claudemax ~/.local/bin/claudemax
+chmod +x ~/.local/bin/claudemax
 
 # 2. Sanity check. This should print normal Claude help.
-~/.local/bin/claude-think --help
+~/.local/bin/claudemax --help
 ```
 
 ### Use it in VS Code
@@ -75,7 +91,7 @@ No PATH changes are required.
 3. Add this line, replacing `YOUR_USERNAME`. This is the official "Claude Code" extension's setting (shown in the UI as "Claude Code: Claude Process Wrapper"):
 
    ```jsonc
-   "claudeCode.claudeProcessWrapper": "/home/YOUR_USERNAME/.local/bin/claude-think"
+   "claudeCode.claudeProcessWrapper": "/home/YOUR_USERNAME/.local/bin/claudemax"
    ```
 
    If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path.
@@ -87,33 +103,31 @@ No PATH changes are required.
 
 ### Use it in a terminal
 
-Run `claude-think` (or `claudemax`) in place of `claude`.
+Run `claudemax` in place of `claude`.
 
 ### Windows 11
 
 The same result is achieved with the compiled `.exe`.
 
-1. Download `claude-think.exe` (or `claudemax.exe` for both fixes) from this repository's [Releases](../../releases), or build it yourself - see [Building the .exe files](#building-the-exe-files).
-2. Put it somewhere stable, such as `C:\Users\YOU\.local\bin\claude-think.exe`.
+1. Download `claudemax.exe` from this repository's [Releases](../../releases), or build it yourself - see [Building the .exe](#building-the-exe).
+2. Put it somewhere stable, such as `C:\Users\YOU\.local\bin\claudemax.exe`.
 3. Open the Command Palette and select "Preferences: Open User Settings (JSON)".
 4. Add the following setting (the official "Claude Code" extension setting). Use double backslashes in the path.
 
    ```jsonc
-   "claudeCode.claudeProcessWrapper": "C:\\Users\\YOU\\.local\\bin\\claude-think.exe"
+   "claudeCode.claudeProcessWrapper": "C:\\Users\\YOU\\.local\\bin\\claudemax.exe"
    ```
 
    If you use the third-party "Claude Code Chat" extension instead, set `"claudeCodeChat.executable.path"` to the same path. In a multi-root `.code-workspace`, put `claudeCode.claudeProcessWrapper` in the workspace file's `"settings"` block or in User settings, not a folder's `.vscode/settings.json`.
 
 5. Reload the VS Code window by opening the Command Palette and selecting "Developer: Reload Window".
-6. To use it in a terminal, run `claude-think.exe` in place of `claude`.
+6. To use it in a terminal, run `claudemax.exe` in place of `claude`.
 
 > The wrapper finds the real Claude binary automatically, including native installs with `claude.exe` and npm installs with `claude.cmd`. If it cannot find the binary, set `CLAUDE_REAL_BIN` to the full path of your `claude` binary.
 
-The Windows sources are [`claude-think.win.js`](claude-think.win.js) and [`claudemax.win.js`](claudemax.win.js).
+### Want only the thinking fix?
 
-### Turn the thinking fix on or off
-
-The launcher reads one environment variable, `CC_THINKING_DISPLAY`:
+Set `CC_PATCH_CONTEXT_ICON=0` to leave the webview untouched and inject only the thinking-display flag. The launcher reads `CC_THINKING_DISPLAY`:
 
 * unset or `summarized`: show thinking summaries, which is the default
 * `omitted`: hide thinking summaries
@@ -128,12 +142,12 @@ The launcher inspects the arguments and, when it detects a real run via any of t
 
 ### Why Option 1 is recommended
 
-1. It survives updates because it does not edit Claude Code files.
+1. It survives updates because it does not edit Claude Code files (for the thinking fix; the context-icon fix re-applies on each launch).
 2. It fixes both the VS Code extension and headless `claude -p` or SDK runs.
 3. It leaves the interactive TUI unchanged because that path already works.
 4. It only injects the flag on real agent runs, not on subcommands or probes such as `mcp`, `config`, or `--version`.
 5. It does not add the flag twice, so it can coexist with a patched or updated extension.
-6. It can be toggled with one environment variable.
+6. Every fix can be toggled with one environment variable.
 7. It provides one place to configure effort level, auto mode, timeouts, or model routing. See the commented customization section in the script and the [Side note](#side-note-launching-claude-code-with-third-party-models).
 
 ## Option 2: One-line `extension.js` patch (VS Code only)
@@ -147,16 +161,16 @@ if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)
 if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
 ```
 
-> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; [`patch-extension.sh`](patch-extension.sh) does this automatically. This version fragility is one reason Option 1 is preferred.
+> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) does this automatically. This version fragility is one reason Option 1 is preferred.
 
 ### Automatic patching on Linux, macOS, WSL, or Git Bash
 
-[`patch-extension.sh`](patch-extension.sh) finds every installed Claude Code extension, backs each one up, and applies the patch:
+[`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) finds every installed Claude Code extension, backs each one up, and applies the patch:
 
 ```sh
-./patch-extension.sh            # patch and create .bak backups
-./patch-extension.sh --dry-run  # preview only, change nothing
-./patch-extension.sh --revert   # restore backups
+./fixes/thinking-summaries/patch-extension.sh            # patch and create .bak backups
+./fixes/thinking-summaries/patch-extension.sh --dry-run  # preview only, change nothing
+./fixes/thinking-summaries/patch-extension.sh --revert   # restore backups
 ```
 
 Reload the VS Code window after patching. Re-run the patch after every extension update because updates replace the extension folder and remove the change.
@@ -180,12 +194,12 @@ A localhost proxy can add the missing field to every request, fixing VS Code, CL
 This is a working starting point, not a turnkey fix. It also sits in the path of your live auth token, so review the security notes before relying on it.
 
 ```sh
-node proxy.js                                      # listens on http://127.0.0.1:8788
+node fixes/thinking-summaries/proxy.js             # listens on http://127.0.0.1:8788
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8788   # set this where Claude launches
 claude ...                                        # for VS Code, set it for the extension host, then reload
 ```
 
-Security: The proxy sees your live auth token. It binds to `127.0.0.1` only, never `0.0.0.0`, and does not log headers or bodies. Unset `ANTHROPIC_BASE_URL` to return directly to Anthropic. See [`proxy.js`](proxy.js) and [TECHNICAL.md](TECHNICAL.md#option-3-local-proxy-design) for details and caveats.
+Security: The proxy sees your live auth token. It binds to `127.0.0.1` only, never `0.0.0.0`, and does not log headers or bodies. Unset `ANTHROPIC_BASE_URL` to return directly to Anthropic. See [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) and [TECHNICAL.md](TECHNICAL.md#option-3-local-proxy-design) for details and caveats.
 
 ---
 
@@ -204,47 +218,48 @@ There is no environment variable or CLI flag for this threshold, so the fix is a
 
 ## Option 1: Launcher (recommended)
 
-Use [`claude-context`](claude-context) for the context-icon fix alone, or [`claudemax`](claudemax) to also restore thinking summaries ([Workaround 1](#workaround-1-thinking-summaries)). Install and wire it up exactly like the Workaround 1 launcher (copy to `~/.local/bin`, point `claudeCode.claudeProcessWrapper` at it, reload), substituting the launcher name. On Windows, download `claude-context.exe` or `claudemax.exe` from [Releases](../../releases).
+The launcher carries this fix on by default. Install and wire it up exactly like Workaround 1 (copy [`launcher/claudemax`](launcher/claudemax) to `~/.local/bin`, point `claudeCode.claudeProcessWrapper` at it, reload). On Windows, download `claudemax.exe` from [Releases](../../releases). To get only the context-icon fix and skip thinking injection, set `CC_THINKING_DISPLAY=omitted`.
 
-On each launch the wrapper idempotently patches the extension's `webview/index.js`, flipping the hidden threshold so the icon shows at any usage level. Because it re-applies every launch, an extension auto-update that reinstalls a fresh bundle is re-patched on the next launch.
+On each launch the wrapper reconciles the extension's `webview/index.js`, flipping the hidden threshold so the icon shows at any usage level. Because it re-applies every launch, an extension auto-update that reinstalls a fresh bundle is re-patched on the next launch.
 
 > First-run note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be **after** the webview already loaded the old bundle. The first time you enable it you may need **two reloads**: reload once (the spawn patches the file), then reload again (the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
 
 ### What it changes
 
-In the indicator component, the render gate is `if (c >= 50) return null`, where `c` is the percent of context **remaining**. So the icon renders only when less than 50% remains (more than 50% used). The fix flips the threshold:
+In the indicator component, the render gate is `if (c >= 50) return null`, where `c` is the percent of context **remaining**. So the icon renders only when less than 50% remains (more than 50% used). The fix flips the threshold and tags the edit with an ownership marker:
 
 ```text
-if(c>=50)return null   ->   if(c>=101)return null
+if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
 ```
 
-`c` maxes at 100, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard (no context window known yet) is left intact, so nothing renders before a session exists. The edit is anchored on the stable string `>=50)return null}`, not on the minified component name, which changes between builds.
+`c` maxes at 100, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard (no context window known yet) is left intact, so nothing renders before a session exists. The edit is anchored on the stable string `>=50)return null}`, not on the minified component name, which changes between builds. The trailing `/*ccwa-context-icon*/` marks the edit as ours, so the launcher only ever reverses its own change.
 
 ### Turn the context-icon fix on or off
 
 The launcher reads `CC_PATCH_CONTEXT_ICON`:
 
 * unset or `1`: patch the webview so the icon is visible, which is the default
-* `0`: leave the extension webview untouched
+* `0`: leave the extension webview untouched (and revert ours on the next launch)
 
 ### This edits the extension (unlike the thinking fix)
 
 Unlike Workaround 1, this fix edits the extension's bundled `webview/index.js`. The edit is made safe:
 
-* **Idempotent** - it skips a file that is already patched, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
-* **Backed up once** - `index.js.bak-context-icon` is created before the first edit.
+* **Idempotent** - it skips a file that is already in the desired state, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
+* **Ownership-marked** - the edit carries a `/*ccwa-context-icon*/` marker; the launcher reverses only its own marked edit and never touches upstream code that merely resembles a patched value.
+* **Snapshotted once** - a whole-file pristine snapshot `index.js.bak-cc-workarounds` is written the first time the file is rewritten, for emergency manual restore only; routine reconcile never reads it.
 * **Atomic** - the change is written to a temp file and moved into place only after it is verified, so a failed or partial write leaves the original untouched.
 * **Best-effort** - every step is guarded; a read-only file, a renamed bundle, or a missing tool simply no-ops and never blocks the launch.
-* **Reversible** - delete the patched bundle's `.bak-context-icon` after restoring it, set `CC_PATCH_CONTEXT_ICON=0`, or just let an extension update replace the file.
+* **Reversible** - set `CC_PATCH_CONTEXT_ICON=0` (the launcher reverts on the next launch), set `CC_WORKAROUNDS=0` to revert every fix, or just let an extension update replace the file.
 
 ## Option 2: Standalone patcher script
 
-[`fix-context-icon.py`](fix-context-icon.py) applies the same one-character-class change directly, without a launcher. It auto-discovers installed extensions, backs each up, and is idempotent.
+[`fixes/context-icon/fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) applies the same change directly, without a launcher. It auto-discovers installed extensions, backs each up to `.bak-context-icon`, and is idempotent.
 
 ```sh
-python3 fix-context-icon.py            # auto-discover and patch all installs
-python3 fix-context-icon.py --revert   # restore from backups
-python3 fix-context-icon.py /path/to/webview/index.js   # explicit target(s)
+python3 fixes/context-icon/fix-context-icon.py            # auto-discover and patch all installs
+python3 fixes/context-icon/fix-context-icon.py --revert   # restore from backups
+python3 fixes/context-icon/fix-context-icon.py /path/to/webview/index.js   # explicit target(s)
 ```
 
 After patching, reload the webview (Command Palette -> "Developer: Reload Window"). Because an extension update reinstalls a fresh bundle and reverts the patch, re-run the script after updates (or use the launcher, which re-applies automatically).
@@ -277,47 +292,36 @@ Setup is otherwise identical to Option 1. This is unrelated to the fixes above.
 ## Troubleshooting
 
 * Thinking still empty after setup: Reload the VS Code window after changing the setting. Confirm the setting points to the launcher's full absolute path. On Windows, confirm the path uses double backslashes.
-* Context icon still missing after setup: It may take two reloads the first time (see the first-run note above). Confirm you are using `claude-context` or `claudemax`, and that `CC_PATCH_CONTEXT_ICON` is not set to `0`.
+* Context icon still missing after setup: It may take two reloads the first time (see the first-run note above). Confirm `CC_PATCH_CONTEXT_ICON` is not set to `0` and `CC_WORKAROUNDS` is not set to `0`.
 * `could not find the real 'claude' binary`: Set `CLAUDE_REAL_BIN` to its full path. Use `which claude` on Linux/macOS or `where claude` on Windows.
 * Nothing changes in a plain terminal chat: This is expected. The interactive TUI already shows summaries and the context icon, and does not need these fixes.
 * Summaries are short: Summary length tracks the reasoning effort level. Try a higher `CLAUDE_CODE_EFFORT_LEVEL`, such as `xhigh`, or enable auto mode with `CLAUDE_CODE_ENABLE_AUTO_MODE=1`. Higher effort uses more tokens.
-* To verify the thinking root cause: Run [`test-thinking-display.sh`](test-thinking-display.sh). It performs a live A/B test and uses a small number of tokens.
+* To verify the thinking root cause: Run [`fixes/thinking-summaries/test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh). It performs a live A/B test and uses a small number of tokens.
 
 ## Files
 
 | File | Workaround | Description |
-|---|---|---|
-| [`claudemax`](claudemax) | both | Launcher (Linux/macOS) with both fixes. |
-| [`claude-think`](claude-think) | thinking | Launcher (Linux/macOS), thinking fix only. |
-| [`claude-context`](claude-context) | context icon | Launcher (Linux/macOS), context-icon fix only. |
-| [`claudemax.win.js`](claudemax.win.js) | both | Windows source for `claudemax.exe`. |
-| [`claude-think.win.js`](claude-think.win.js) | thinking | Windows source for `claude-think.exe`. |
-| [`claude-context.win.js`](claude-context.win.js) | context icon | Windows source for `claude-context.exe`. |
-| [`patch-extension.sh`](patch-extension.sh) | thinking | Option 2 idempotent `extension.js` patch with `--revert` and `--dry-run`. |
-| [`fix-context-icon.py`](fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
-| [`proxy.js`](proxy.js) | thinking | Option 3 localhost proxy. Advanced and untested. |
-| [`test-thinking-display.sh`](test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
-| [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis and design notes. |
+| --- | --- | --- |
+| [`launcher/claudemax`](launcher/claudemax) | both | Unified launcher (Linux/macOS), env-toggled. |
+| [`launcher/claudemax.win.js`](launcher/claudemax.win.js) | both | Windows source for `claudemax.exe`. |
+| [`launcher/README.md`](launcher/README.md) | both | Wiring, the toggle table, the VS Code env-setting how-to, the build command. |
+| [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) | thinking | Option 2 idempotent `extension.js` patch with `--revert` and `--dry-run`. |
+| [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) | thinking | Option 3 localhost proxy. Advanced and untested. |
+| [`fixes/thinking-summaries/test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
+| [`fixes/context-icon/fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
+| [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis, the reconcile model, and design notes. |
 
 ## Releases
 
-Prebuilt Windows `.exe` launchers are published on the [Releases](../../releases) page rather than committed to the repo, since they are large and reproducible from the `*.win.js` sources. Each release attaches:
+The prebuilt Windows `claudemax.exe` launcher is published on the [Releases](../../releases) page rather than committed to the repo, since it is large and reproducible from the `claudemax.win.js` source. Linux and macOS users run the bash script from the repo and do not need a download.
 
-* `claudemax.exe` - both fixes
-* `claude-think.exe` - thinking fix only
-* `claude-context.exe` - context-icon fix only
+## Building the .exe
 
-Linux and macOS users run the bash scripts from the repo and do not need a download.
-
-## Building the .exe files
-
-The Windows launchers are built from their `*.win.js` sources into standalone `.exe`s with [vercel/pkg](https://github.com/vercel/pkg). Node.js is required.
+The Windows launcher is built from its `*.win.js` source into a standalone `.exe` with [vercel/pkg](https://github.com/vercel/pkg). Node.js is required.
 
 ```sh
 npm i -g pkg
-pkg claudemax.win.js      --targets node18-win-x64 --output claudemax.exe
-pkg claude-think.win.js   --targets node18-win-x64 --output claude-think.exe
-pkg claude-context.win.js --targets node18-win-x64 --output claude-context.exe
+pkg launcher/claudemax.win.js --targets node18-win-x64 --output claudemax.exe
 ```
 
 ## Compatibility
