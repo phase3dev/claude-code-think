@@ -254,10 +254,12 @@ class PatcherRegressionTests(unittest.TestCase):
             # path is verified by inspection only.
             self.assertEqual(after.st_uid, before.st_uid)
             self.assertEqual(after.st_gid, before.st_gid)
-            self.assertEqual(
-                target.read_text(encoding="utf-8"), f"before {NEW_ICON} after"
-            )
+            patched_text = target.read_text(encoding="utf-8")
+            self.assertIn("/*ccwa-context-icon*/", patched_text)
+            self.assertEqual(patched_text, f"before {mod.NEW} after")
             self.assertTrue((pathlib.Path(str(target) + mod.BACKUP_SUFFIX)).exists())
+            # Idempotent: a second patch is a no-op.
+            self.assertEqual(mod.patch_file(str(target)), "already-patched")
 
     def test_patch_extension_avoids_bash4_mapfile(self):
         source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")
