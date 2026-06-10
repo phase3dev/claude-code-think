@@ -173,5 +173,21 @@ class BashReconcileTests(ReconcileMixin, unittest.TestCase):
             self.assertEqual(stat.S_IMODE(idx.stat().st_mode), 0o640)
 
 
+class WinReconcileTests(ReconcileMixin, unittest.TestCase):
+    def _run(self, td, home, args=None, env_extra=None):
+        cli, capture = make_fake_node_cli(td)
+        shim = make_fake_cmd_shim(td, cli)
+        self._capture_path = capture
+        env = {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "CLAUDE_REAL_BIN": str(shim),
+            "CAPTURE_ARGS": str(capture),
+        }
+        if env_extra:
+            env.update(env_extra)
+        return run(["node", str(LAUNCHER_WIN), *(args or [])], env=env)
+
+
 if __name__ == "__main__":
     unittest.main()

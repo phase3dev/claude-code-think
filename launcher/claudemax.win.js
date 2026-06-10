@@ -232,33 +232,76 @@ if (!claude) {
 // minified component name. If a future build changes that exact substring, the
 // routine safely no-ops until the anchor here is updated.
 const ICON_OLD = ">=50)return null}";
-const ICON_NEW = ">=101)return null}";
+const ICON_MARKER = "/*ccwa-context-icon*/";
+const ICON_NEW = ">=101)return null}" + ICON_MARKER;
 
-function ccPatchIndexJs(file) {
+// Bundle-patch feature registry. Each feature is idempotent (apply/undo are
+// no-ops when their target state already holds) and reversible; undo keys off
+// the ownership MARKER only, so it reverses ONLY our own edits. Order matters:
+// apply runs forward, undo runs in reverse.
+function applyContextIcon(data) {
+  if (data.indexOf(ICON_MARKER) !== -1) return data; // already applied
+  const n = data.split(ICON_OLD).length - 1;
+  if (n === 0) {
+    console.error(
+      "claudemax: context-icon anchor not found (extension changed?); skipping"
+    );
+    return data;
+  }
+  if (n !== 1) return data; // ambiguous (version changed) - skip
+  return data.replace(ICON_OLD, ICON_NEW);
+}
+
+function undoContextIcon(data) {
+  if (data.indexOf(ICON_MARKER) === -1) return data; // nothing of ours
+  return data.split(ICON_NEW).join(ICON_OLD);
+}
+
+function contextIconEnabled() {
+  if (process.env.CC_WORKAROUNDS === "0") return false;
+  return process.env.CC_PATCH_CONTEXT_ICON !== "0";
+}
+
+const BUNDLE_FEATURES = [
+  {
+    id: "context-icon",
+    enabled: contextIconEnabled,
+    apply: applyContextIcon,
+    undo: undoContextIcon,
+  },
+];
+
+// Reconcile one file: undo every known feature (reverse), re-apply enabled ones
+// (forward), write only when the bytes change. Best-effort; never throws.
+function reconcileIndexJs(file) {
   try {
     if (!fs.existsSync(file)) return;
-    let data;
+    let current;
     try {
-      data = fs.readFileSync(file, "utf8");
+      current = fs.readFileSync(file, "utf8");
     } catch (_) {
       return; // not readable
     }
-    if (data.indexOf(ICON_NEW) !== -1) return; // already patched
-    const oldMatches = data.split(ICON_OLD).length - 1;
-    if (oldMatches !== 1) return; // gate absent or ambiguous (version changed)
-    const bak = file + ".bak-context-icon";
+    let base = current;
+    for (let i = BUNDLE_FEATURES.length - 1; i >= 0; i--) {
+      base = BUNDLE_FEATURES[i].undo(base);
+    }
+    let desired = base;
+    for (const feat of BUNDLE_FEATURES) {
+      if (feat.enabled()) desired = feat.apply(desired);
+    }
+    if (desired === current) return; // idempotent: nothing to write
+    const bak = file + ".bak-cc-workarounds";
     if (!fs.existsSync(bak)) {
       try {
-        fs.writeFileSync(bak, data);
+        fs.writeFileSync(bak, base); // pristine snapshot, emergency-only
       } catch (_) {
         /* best-effort backup */
       }
     }
-    const patched = data.replace(ICON_OLD, ICON_NEW);
-    if (patched.indexOf(ICON_NEW) === -1) return; // sanity: substitution took
     const tmp = file + ".ccpatch." + process.pid;
     try {
-      fs.writeFileSync(tmp, patched);
+      fs.writeFileSync(tmp, desired);
       fs.renameSync(tmp, file); // atomic on the same volume
     } catch (_) {
       try {
@@ -316,15 +359,15 @@ function scanExtensionIndexes() {
   return found;
 }
 
-function restoreContextIcon(binPath) {
-  if (process.env.CC_PATCH_CONTEXT_ICON === "0") return;
+function reconcile(binPath) {
+  if (process.env.CC_RECONCILE === "0") return; // emergency bypass: touch nothing
   const targets = new Set();
   if (binPath) {
     const root = extensionRootFromBinary(binPath);
     if (root) targets.add(path.join(root, "webview", "index.js"));
   }
   for (const f of scanExtensionIndexes()) targets.add(f);
-  for (const f of targets) ccPatchIndexJs(f);
+  for (const f of targets) reconcileIndexJs(f);
 }
 
 // --- Behavior --------------------------------------------------------------
@@ -385,6 +428,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 const args = argv.slice();
 if (
+  process.env.CC_WORKAROUNDS !== "0" &&
   !haveDisplay &&
   !thinkingDisabled &&
   displayValue !== "omitted" &&
@@ -393,8 +437,8 @@ if (
   args.push("--thinking-display", displayValue);
 }
 
-// Patch the webview before handing off (best-effort; never throws).
-restoreContextIcon(wrapperBin);
+// Reconcile the webview before handing off (best-effort; never throws).
+reconcile(wrapperBin);
 
 const invocation = resolveClaudeInvocation(claude, args);
 if (!invocation) process.exit(1);
