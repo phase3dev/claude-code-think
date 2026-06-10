@@ -189,5 +189,47 @@ class WinReconcileTests(ReconcileMixin, unittest.TestCase):
         return run(["node", str(LAUNCHER_WIN), *(args or [])], env=env)
 
 
+@unittest.skipIf(os.name == "nt", "needs both bash and node on PATH")
+class ParityTests(unittest.TestCase):
+    def test_bash_and_node_produce_identical_bundle_and_args(self):
+        results = {}
+        for kind in ("bash", "node"):
+            with tempfile.TemporaryDirectory() as td:
+                home = pathlib.Path(td)
+                idx = make_extension(home, f"before {OLD} after")
+                if kind == "bash":
+                    fake, capture = make_fake_claude(td)
+                    env = {
+                        "HOME": str(home),
+                        "CLAUDE_REAL_BIN": str(fake),
+                        "CAPTURE_ARGS": str(capture),
+                    }
+                    res = run([str(LAUNCHER_BASH), "--max-thinking-tokens=200"], env=env)
+                else:
+                    cli, capture = make_fake_node_cli(td)
+                    shim = make_fake_cmd_shim(td, cli)
+                    env = {
+                        "HOME": str(home),
+                        "USERPROFILE": str(home),
+                        "CLAUDE_REAL_BIN": str(shim),
+                        "CAPTURE_ARGS": str(capture),
+                    }
+                    res = run(
+                        ["node", str(LAUNCHER_WIN), "--max-thinking-tokens=200"], env=env
+                    )
+                self.assertEqual(res.returncode, 0, res.stderr)
+                results[kind] = (
+                    idx.read_text(encoding="utf-8"),
+                    captured_args(capture),
+                )
+        self.assertEqual(results["bash"][0], results["node"][0])
+        self.assertEqual(results["bash"][1], results["node"][1])
+        self.assertEqual(results["bash"][0], f"before {MARKED} after")
+        self.assertEqual(
+            results["bash"][1],
+            ["--max-thinking-tokens=200", "--thinking-display", "summarized"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
