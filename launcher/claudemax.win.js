@@ -1,4 +1,4 @@
-// claudemax.win.js - Windows launcher for Claude Code that combines TWO
+// claudemax.win.js - Windows launcher for Claude Code that combines three
 // unofficial fixes:
 //
 //   1. Restores extended-thinking summaries on Opus 4.7 / 4.8, where the
@@ -13,18 +13,24 @@
 //      this wrapper idempotently patches the extension's webview bundle on each
 //      launch, flipping the threshold so the icon shows at any usage level.
 //      Because it re-applies every launch, it survives extension updates.
+//   3. Adds per-message and whole-conversation "Copy" controls (Markdown / plain
+//      text) to the VS Code chat. Like fix #2 there is no env/CLI lever, so this
+//      wrapper idempotently appends a self-contained block to the webview bundle
+//      (index.js + index.css) each launch; it fails safe (the controls simply do
+//      not appear if the markup moves) and survives extension updates.
 //
 // This single launcher carries every fix, each independently switchable by an
-// environment variable (all on by default). For thinking only, set
-// CC_PATCH_CONTEXT_ICON=0; for the context-icon fix only, set
-// CC_THINKING_DISPLAY=omitted.
+// environment variable (all on by default): CC_THINKING_DISPLAY=omitted (fix 1),
+// CC_PATCH_CONTEXT_ICON=0 (fix 2), CC_PATCH_MD_COPY=0 (fix 3). E.g. for thinking
+// summaries only, set CC_PATCH_CONTEXT_ICON=0 AND CC_PATCH_MD_COPY=0.
 //
-// NOTE: unlike fix #1, fix #2 DOES edit the extension's bundled webview/index.js.
-// That edit is idempotent and ownership-marked, snapshotted once to
+// NOTE: unlike fix #1, fixes #2 and #3 DO edit the extension's bundled webview
+// files (#2 patches index.js in place; #3 appends a block to index.js + index.css).
+// Those edits are idempotent and ownership-marked, snapshotted once to
 // index.js.bak-cc-workarounds (emergency restore only), written via a temp file +
 // rename, best-effort (it never blocks the launch), reconciled per file every
-// launch, and toggle-able with CC_PATCH_CONTEXT_ICON=0 (or CC_WORKAROUNDS=0 /
-// CC_RECONCILE=0).
+// launch, and toggle-able with CC_PATCH_CONTEXT_ICON=0 / CC_PATCH_MD_COPY=0 (or
+// CC_WORKAROUNDS=0 / CC_RECONCILE=0).
 //
 // Use it: set the official "Claude Code" extension's "claudeCode.claudeProcessWrapper"
 // setting (or the third-party "Claude Code Chat" extension's
@@ -36,7 +42,8 @@
 //
 // Toggle off:
 //   set CC_THINKING_DISPLAY=omitted    hide thinking summaries (default: summarized)
-//   set CC_PATCH_CONTEXT_ICON=0        leave the extension webview untouched (default: 1)
+//   set CC_PATCH_CONTEXT_ICON=0        leave the context-usage icon as-is (default: 1)
+//   set CC_PATCH_MD_COPY=0             no copy controls / webview append (default: 1)
 //   set CC_WORKAROUNDS=0               master: disable every fix (default: 1)
 //   set CC_RECONCILE=0                 do not touch the webview bundle (default: 1)
 //
