@@ -71,7 +71,7 @@ def captured_args(path):
 class LauncherRegressionTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
     def test_bash_thinking_launchers_parse_equals_flags_and_validate_display(self):
-        for launcher in ("claude-think", "claudemax"):
+        for launcher in ("claudemax",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     fake, capture = make_fake_claude(td)
@@ -81,7 +81,7 @@ class LauncherRegressionTests(unittest.TestCase):
                         "CC_PATCH_CONTEXT_ICON": "0",
                     }
 
-                    res = run([str(REPO / launcher), "--thinking=adaptive"], env=env)
+                    res = run([str(REPO / "launcher" / launcher), "--thinking=adaptive"], env=env)
                     self.assertEqual(res.returncode, 0, res.stderr)
                     self.assertEqual(
                         captured_args(capture),
@@ -90,7 +90,7 @@ class LauncherRegressionTests(unittest.TestCase):
 
                     capture.unlink()
                     res = run(
-                        [str(REPO / launcher), "--max-thinking-tokens=123"],
+                        [str(REPO / "launcher" / launcher), "--max-thinking-tokens=123"],
                         env=env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -106,7 +106,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     capture.unlink()
                     res = run(
                         [
-                            str(REPO / launcher),
+                            str(REPO / "launcher" / launcher),
                             "--thinking",
                             "adaptive",
                             "--thinking-display=omitted",
@@ -123,7 +123,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     bad_env = dict(env)
                     bad_env["CC_THINKING_DISPLAY"] = "bogus"
                     res = run(
-                        [str(REPO / launcher), "--thinking=adaptive"],
+                        [str(REPO / "launcher" / launcher), "--thinking=adaptive"],
                         env=bad_env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -137,7 +137,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     # when a trigger like --print is present.
                     capture.unlink()
                     res = run(
-                        [str(REPO / launcher), "--print", "--thinking=disabled"],
+                        [str(REPO / "launcher" / launcher), "--print", "--thinking=disabled"],
                         env=env,
                     )
                     self.assertEqual(res.returncode, 0, res.stderr)
@@ -147,7 +147,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     )
 
     def test_windows_thinking_launchers_resolve_cmd_shims_without_shell(self):
-        for launcher in ("claude-think.win.js", "claudemax.win.js"):
+        for launcher in ("claudemax.win.js",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     cli, capture = make_fake_node_cli(td)
@@ -161,7 +161,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     res = run(
                         [
                             "node",
-                            str(REPO / launcher),
+                            str(REPO / "launcher" / launcher),
                             "--thinking=adaptive",
                             "literal&arg",
                             "%PATH%",
@@ -186,7 +186,7 @@ class LauncherRegressionTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
     def test_bash_context_icon_launchers_skip_ambiguous_files(self):
-        launchers = ("claude-context", "claudemax")
+        launchers = ("claudemax",)
         for launcher in launchers:
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
@@ -205,7 +205,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     index.write_text(original, encoding="utf-8")
 
                     res = run(
-                        [str(REPO / launcher)],
+                        [str(REPO / "launcher" / launcher)],
                         env={
                             "HOME": str(temp),
                             "CLAUDE_REAL_BIN": str(fake),
@@ -217,7 +217,7 @@ class LauncherRegressionTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
     def test_bash_context_icon_launchers_patch_single_match(self):
-        for launcher in ("claude-context", "claudemax"):
+        for launcher in ("claudemax",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     temp = pathlib.Path(td)
@@ -235,7 +235,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     index.chmod(0o640)
 
                     res = run(
-                        [str(REPO / launcher)],
+                        [str(REPO / "launcher" / launcher)],
                         env={
                             "HOME": str(temp),
                             "CLAUDE_REAL_BIN": str(fake),
@@ -251,7 +251,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     self.assertEqual(stat.S_IMODE(index.stat().st_mode), 0o640)
 
     def test_windows_context_icon_launchers_skip_ambiguous_files(self):
-        win_launchers = ("claude-context.win.js", "claudemax.win.js")
+        win_launchers = ("claudemax.win.js",)
         for launcher in win_launchers:
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
@@ -271,7 +271,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     index.write_text(original, encoding="utf-8")
 
                     res = run(
-                        ["node", str(REPO / launcher)],
+                        ["node", str(REPO / "launcher" / launcher)],
                         env={
                             "HOME": str(temp),
                             "USERPROFILE": str(temp),
@@ -283,7 +283,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     self.assertEqual(index.read_text(encoding="utf-8"), original)
 
     def test_windows_context_icon_launchers_patch_single_match(self):
-        for launcher in ("claude-context.win.js", "claudemax.win.js"):
+        for launcher in ("claudemax.win.js",):
             with self.subTest(launcher=launcher):
                 with tempfile.TemporaryDirectory() as td:
                     temp = pathlib.Path(td)
@@ -301,7 +301,7 @@ class LauncherRegressionTests(unittest.TestCase):
                     index.write_text(f"before {OLD_ICON} after", encoding="utf-8")
 
                     res = run(
-                        ["node", str(REPO / launcher)],
+                        ["node", str(REPO / "launcher" / launcher)],
                         env={
                             "HOME": str(temp),
                             "USERPROFILE": str(temp),
