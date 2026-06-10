@@ -323,6 +323,16 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
   // ---- HTML -> Markdown (DOM walk) -------------------------------------------
   // Uses only: nodeType, tagName, childNodes, textContent, getAttribute, className.
   function htmlToMarkdown(root) {
+    // Longest run of consecutive backticks in s, so a code delimiter/fence can be
+    // chosen longer than anything inside it (else ``` in the content closes early).
+    function backtickRun(s) {
+      var max = 0, cur = 0;
+      for (var i = 0; i < s.length; i++) {
+        if (s.charAt(i) === "`") { cur++; if (cur > max) max = cur; } else cur = 0;
+      }
+      return max;
+    }
+    function fence(s, min) { var n = backtickRun(s) + 1; if (n < min) n = min; return new Array(n + 1).join("`"); }
     function inline(node) {
       var out = "";
       var kids = node.childNodes || [];
@@ -335,7 +345,14 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
         else if (tag === "STRONG" || tag === "B") out += "**" + inline(c) + "**";
         else if (tag === "EM" || tag === "I") out += "*" + inline(c) + "*";
         else if (tag === "DEL" || tag === "S") out += "~~" + inline(c) + "~~";
-        else if (tag === "CODE") out += "`" + (c.textContent || "") + "`";
+        else if (tag === "CODE") {
+          var ct = c.textContent || "";
+          var d = fence(ct, 1);
+          // CommonMark strips one leading+trailing space, so pad when an edge is a
+          // backtick to keep it from merging with the delimiter.
+          var p = (ct.charAt(0) === "`" || ct.charAt(ct.length - 1) === "`") ? " " : "";
+          out += d + p + ct + p + d;
+        }
         else if (tag === "A") {
           var href = c.getAttribute ? c.getAttribute("href") : null;
           var t = inline(c);
@@ -423,7 +440,8 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
           var code = findChildTag(c, "CODE");
           var lang = langOf(code || c);
           var body = (code || c).textContent || "";
-          out += "```" + lang + "\n" + body.replace(/\n$/, "") + "\n```\n\n";
+          var f = fence(body, 3);
+          out += f + lang + "\n" + body.replace(/\n$/, "") + "\n" + f + "\n\n";
         } else if (tag === "BLOCKQUOTE") {
           var inner = block(c).trim().split("\n").map(function (l) { return "> " + l; }).join("\n");
           out += inner + "\n\n";

@@ -134,7 +134,18 @@ def render(rows, fmt="markdown", include_thinking=False, include_tools=False):
 
 
 def _fence(label, text):
-    return f"```{label}\n{text.rstrip()}\n```"
+    # Pick a fence longer than the longest backtick run in the body, so content
+    # that itself contains ``` cannot close the fence early.
+    text = text.rstrip()
+    longest = run = 0
+    for ch in text:
+        if ch == "`":
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 0
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{label}\n{text}\n{fence}"
 
 
 def main(argv=None, config=None, env=None):

@@ -94,6 +94,22 @@ class ConverterTests(unittest.TestCase):
         self.assertIn("kept", out)
         self.assertNotIn("span", out)
 
+    def test_inline_code_with_backtick_uses_longer_delimiter(self):
+        # content has a run of 1 backtick -> delimiter must be 2 so it can't close early
+        out = convert("el('p',{},[el('code',{},[txt('a`b')])])")
+        self.assertIn("``a`b``", out)
+
+    def test_inline_code_edge_backtick_is_space_padded(self):
+        # content starts with a backtick -> CommonMark needs a space inside the delimiters
+        out = convert("el('p',{},[el('code',{},[txt('`x')])])")
+        self.assertIn("`` `x ``", out)
+
+    def test_fenced_code_with_triple_backticks_uses_longer_fence(self):
+        # body contains a run of 3 backticks -> fence must be >=4 or it closes early
+        out = convert("el('pre',{},[el('code',{class:'language-md'},[txt('```\\nx\\n```')])])")
+        self.assertIn("````md", out)
+        self.assertTrue(out.strip().endswith("````"))
+
 
 if __name__ == "__main__":
     unittest.main()

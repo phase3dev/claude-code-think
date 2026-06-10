@@ -142,6 +142,18 @@ class CcExportTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(capture.read_text(encoding="utf-8"), str(sess))
 
+    def test_fence_uses_longer_delimiter_when_body_has_backticks(self):
+        # a tool/thinking payload that itself contains a ``` run must not close the
+        # fence early: the delimiter grows to one more than the longest backtick run.
+        out = self.mod._fence("tool_result", "```\ncode\n```")
+        self.assertTrue(out.startswith("````tool_result\n"))
+        self.assertTrue(out.endswith("\n````"))
+        self.assertEqual(out.count("````"), 2)  # exactly one opening + one closing fence
+
+    def test_fence_default_three_backticks_when_no_backticks(self):
+        out = self.mod._fence("thinking", "plain text")
+        self.assertEqual(out, "```thinking\nplain text\n```")
+
 
 if __name__ == "__main__":
     unittest.main()
