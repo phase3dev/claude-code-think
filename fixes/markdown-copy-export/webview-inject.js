@@ -14,6 +14,12 @@
   // was WRONG: that attribute sits on the nested rating control, which is also only
   // rendered behind an experiment+analytics gate.) Re-pinned in Task 6.
   var ASSISTANT_BUBBLE = '[data-testid="assistant-message"]';
+  var MESSAGES_CONTAINER = '[class*="messagesContainer_"]'; // e.g. '[class*="timeline_"]'; "" -> observe document.body
+  // Optional narrowing only. MUST be a single wrapper around ALL content blocks,
+  // not a per-block class (a turn has multiple blocks). "" -> use the bubble itself
+  // (already aggregates all blocks; sanitizeClone is the correctness gate).
+  var ASSISTANT_CONTENT = "";
+  var FEEDBACK_MS = 1800;
 
   // ---- HTML -> Markdown (DOM walk) -------------------------------------------
   // Uses only: nodeType, tagName, childNodes, textContent, getAttribute, className.
@@ -217,6 +223,140 @@
                        classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown };
   }
 
-  // boot() is defined in Phase 3; declare a no-op so the file is valid until then.
-  function boot() {}
+  // ---- live-webview wiring (runs only when a document exists) ----------------
+  function qs(node, sel) { try { return sel && node.querySelector ? node.querySelector(sel) : null; } catch (_) { return null; } }
+  function qsa(sel) { try { return Array.prototype.slice.call(document.querySelectorAll(sel)); } catch (_) { return []; } }
+
+  // The content node to convert/copy: the optional ASSISTANT_CONTENT wrapper if
+  // pinned and present, else the bubble itself. The bubble already contains every
+  // content-block sibling of a multi-block turn, and sanitizeClone strips the
+  // chrome (rating widget, tool/thinking/unknown blocks, buttons, our controls)
+  // either way -- so this is a narrowing, never the thing that guarantees
+  // correctness.
+  function contentNodeOf(bubble, role) {
+    if (role === "assistant" && ASSISTANT_CONTENT) {
+      var n = qs(bubble, ASSISTANT_CONTENT);
+      if (n) return n;
+    }
+    return bubble;
+  }
+
+  function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    } catch (_) {}
+    return Promise.resolve(); // best-effort; never throw into the app
+  }
+
+  function flashFeedback(host) {
+    try {
+      var fb = document.createElement("span");
+      fb.className = CONTROL_PREFIX + "-feedback";
+      fb.textContent = "Copied";
+      host.appendChild(fb);
+      setTimeout(function () { if (fb && fb.parentNode) fb.parentNode.removeChild(fb); }, FEEDBACK_MS);
+    } catch (_) {}
+  }
+
+  function bubbleMarkdown(bubble, role) {
+    var clean = sanitizeClone(contentNodeOf(bubble, role));
+    return role === "assistant" ? htmlToMarkdown(clean) : (clean.textContent || "").trim();
+  }
+  function bubblePlain(bubble, role) {
+    return (sanitizeClone(contentNodeOf(bubble, role)).textContent || "").trim();
+  }
+
+  // Build a single control: a primary "Copy" (markdown) plus a small caret that
+  // toggles a menu with "Copy as plain text". All nodes carry the CONTROL_PREFIX
+  // class so sanitizeClone removes them from any copied content.
+  function buildControl(onMarkdown, onPlain) {
+    var wrap = document.createElement("span");
+    wrap.className = CONTROL_PREFIX;
+    var primary = document.createElement("button");
+    primary.type = "button";
+    primary.className = CONTROL_PREFIX + "-btn";
+    primary.title = "Copy as Markdown";
+    primary.textContent = "Copy";
+    primary.addEventListener("click", function (e) { e.stopPropagation(); onMarkdown(primary); });
+    var caret = document.createElement("button");
+    caret.type = "button";
+    caret.className = CONTROL_PREFIX + "-caret";
+    caret.title = "Copy options";
+    caret.textContent = "▾"; // black down-pointing small triangle
+    var menu = document.createElement("span");
+    menu.className = CONTROL_PREFIX + "-menu";
+    menu.style.display = "none";
+    var plain = document.createElement("button");
+    plain.type = "button";
+    plain.className = CONTROL_PREFIX + "-btn";
+    plain.textContent = "Copy as plain text";
+    plain.addEventListener("click", function (e) { e.stopPropagation(); menu.style.display = "none"; onPlain(plain); });
+    menu.appendChild(plain);
+    caret.addEventListener("click", function (e) {
+      e.stopPropagation();
+      menu.style.display = menu.style.display === "none" ? "inline-block" : "none";
+    });
+    wrap.appendChild(primary);
+    wrap.appendChild(caret);
+    wrap.appendChild(menu);
+    return wrap;
+  }
+
+  function decorate(bubble) {
+    try {
+      var role = classifyBubble(bubble);
+      if (!role) return;
+      if (qs(bubble, "." + CONTROL_PREFIX)) return; // already decorated
+      var control = buildControl(
+        function (host) { copyText(bubbleMarkdown(bubble, role)).then(function () { flashFeedback(control); }); },
+        function (host) { copyText(bubblePlain(bubble, role)).then(function () { flashFeedback(control); }); }
+      );
+      bubble.appendChild(control);
+    } catch (_) {}
+  }
+
+  function copyConversation(format) {
+    var bubbles = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE);
+    if (format === "text") {
+      var lines = [];
+      for (var i = 0; i < bubbles.length; i++) {
+        var role = classifyBubble(bubbles[i]);
+        if (!role) continue;
+        var body = bubblePlain(bubbles[i], role);
+        if (body) lines.push(body);
+      }
+      return copyText(lines.join("\n\n") + (lines.length ? "\n" : ""));
+    }
+    return copyText(conversationToMarkdown(bubbles, function (b) {
+      return contentNodeOf(b, classifyBubble(b));
+    }));
+  }
+
+  function installConversationControl() {
+    try {
+      if (qs(document, "." + CONTROL_PREFIX + "-conversation")) return;
+      var bar = document.createElement("div");
+      bar.className = CONTROL_PREFIX + "-conversation";
+      var control = buildControl(
+        function () { copyConversation("markdown").then(function () { flashFeedback(bar); }); },
+        function () { copyConversation("text").then(function () { flashFeedback(bar); }); }
+      );
+      control.title = "Copy entire conversation";
+      bar.appendChild(control);
+      document.body.appendChild(bar); // fixed-position via CSS; placement refined in Task 6
+    } catch (_) {}
+  }
+
+  function sweep() { var b = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE); for (var i = 0; i < b.length; i++) decorate(b[i]); }
+
+  function boot() {
+    try {
+      var target = (MESSAGES_CONTAINER && qs(document, MESSAGES_CONTAINER)) || document.body;
+      sweep();
+      installConversationControl();
+      if (typeof MutationObserver === "undefined") return;
+      var obs = new MutationObserver(function () { sweep(); });
+      obs.observe(target, { childList: true, subtree: true });
+    } catch (_) {}
+  }
 })();
