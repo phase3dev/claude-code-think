@@ -29,7 +29,9 @@ MARKER = "/*ccwa-context-icon*/"
 MARKED = ">=101)return null}" + MARKER
 BARE101 = ">=101)return null}"
 BAK = ".bak-cc-workarounds"
-STRAY_FRAGMENTS = (".ccbase.", ".ccnew.", ".ccwrite.", ".ccapply.", ".ccundo.", ".ccpatch.")
+MD_OPEN = "/* cc-md-copy v1 */"
+MD_CLOSE = "/* /cc-md-copy v1 */"
+STRAY_FRAGMENTS = (".ccbase.", ".ccnew.", ".ccwrite.", ".ccapply.", ".ccundo.", ".ccpatch.", ".ccmdapply.", ".ccmdundo.")
 
 
 def make_extension(home, content):
@@ -205,8 +207,85 @@ class ReconcileMixin:
             self.assertEqual(idx.read_text(encoding="utf-8"), original)
 
 
+class MdCopyReconcileMixin:
+    """md-copy reconcile assertions (append feature on index.js + index.css, and
+    composition with context-icon). Subclasses provide `_run` and inherit from
+    ReconcileMixin too (so make_extension/_captured are available)."""
+
+    def _css_sibling(self, idx, content=".x{}\n"):
+        css = idx.with_name("index.css")
+        css.write_text(content, encoding="utf-8")
+        return css
+
+    def test_md_copy_block_applied_to_js_and_css_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, "console.log(1)\n")
+            css = self._css_sibling(idx)
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            jt, ct = idx.read_text(encoding="utf-8"), css.read_text(encoding="utf-8")
+            self.assertIn(MD_OPEN, jt)
+            self.assertIn(MD_CLOSE, jt)
+            self.assertIn("cc-md-copy", jt)   # the IIFE payload landed
+            self.assertTrue(jt.startswith("console.log(1)"))
+            self.assertIn(MD_OPEN, ct)
+            # idempotent: a second launch changes nothing and leaves no temp files
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            self.assertEqual(idx.read_text(encoding="utf-8"), jt)
+            self.assertEqual(jt.count(MD_OPEN), 1)
+            strays = [p.name for p in idx.parent.iterdir() if any(s in p.name for s in STRAY_FRAGMENTS)]
+            self.assertEqual(strays, [])
+
+    def test_md_copy_reverted_when_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            original = "console.log(1)\n"
+            idx = make_extension(home, original)
+            css = self._css_sibling(idx)
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            self.assertIn(MD_OPEN, idx.read_text(encoding="utf-8"))
+            # disable -> reconcile removes our block, byte-exactly
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "0"}).returncode, 0)
+            self.assertEqual(idx.read_text(encoding="utf-8"), original)
+            self.assertNotIn(MD_OPEN, css.read_text(encoding="utf-8"))
+
+    def test_md_copy_composes_with_context_icon_on_index_js(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"head {OLD} tail\n")
+            self._css_sibling(idx)
+            # both features on
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            both = idx.read_text(encoding="utf-8")
+            self.assertIn(MARKED, both)        # context-icon applied
+            self.assertIn(MD_OPEN, both)       # md-copy applied
+            # turn context-icon OFF, md-copy stays on -> context reverts, md-copy intact
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0", "CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            t = idx.read_text(encoding="utf-8")
+            self.assertIn(OLD, t)
+            self.assertNotIn(MARKED, t)
+            self.assertIn(MD_OPEN, t)
+            # turn md-copy OFF, context-icon back on -> md-copy reverts, context intact
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "0"}).returncode, 0)
+            t2 = idx.read_text(encoding="utf-8")
+            self.assertIn(MARKED, t2)
+            self.assertNotIn(MD_OPEN, t2)
+
+    def test_master_switch_reverts_md_copy_too(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            original = "x\n"
+            idx = make_extension(home, original)
+            css = self._css_sibling(idx)
+            self.assertEqual(self._run(td, home, env_extra={"CC_PATCH_MD_COPY": "1"}).returncode, 0)
+            self.assertIn(MD_OPEN, idx.read_text(encoding="utf-8"))
+            self.assertEqual(self._run(td, home, env_extra={"CC_WORKAROUNDS": "0"}).returncode, 0)
+            self.assertEqual(idx.read_text(encoding="utf-8"), original)
+            self.assertNotIn(MD_OPEN, css.read_text(encoding="utf-8"))
+
+
 @unittest.skipIf(os.name == "nt", "POSIX bash launcher test")
-class BashReconcileTests(ReconcileMixin, unittest.TestCase):
+class BashReconcileTests(ReconcileMixin, MdCopyReconcileMixin, unittest.TestCase):
     def _run(self, td, home, args=None, env_extra=None):
         fake, capture = make_fake_claude(td)
         self._capture_path = capture
@@ -214,6 +293,9 @@ class BashReconcileTests(ReconcileMixin, unittest.TestCase):
             "HOME": str(home),
             "CLAUDE_REAL_BIN": str(fake),
             "CAPTURE_ARGS": str(capture),
+            # Default md-copy off so ReconcileMixin tests (which assert context-icon
+            # only) are unaffected; MdCopyReconcileMixin tests pass CC_PATCH_MD_COPY=1.
+            "CC_PATCH_MD_COPY": "0",
         }
         if env_extra:
             env.update(env_extra)
@@ -250,13 +332,14 @@ class BashReconcileTests(ReconcileMixin, unittest.TestCase):
                 "HOME": str(home),
                 "CLAUDE_REAL_BIN": str(fake),
                 "CAPTURE_ARGS": str(capture),
+                "CC_PATCH_MD_COPY": "0",
             }
             res = run([str(LAUNCHER_BASH), "--thinking=adaptive"], env=env)
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
 
 
-class WinReconcileTests(ReconcileMixin, unittest.TestCase):
+class WinReconcileTests(ReconcileMixin, MdCopyReconcileMixin, unittest.TestCase):
     def _run(self, td, home, args=None, env_extra=None):
         cli, capture = make_fake_node_cli(td)
         shim = make_fake_cmd_shim(td, cli)
@@ -266,6 +349,9 @@ class WinReconcileTests(ReconcileMixin, unittest.TestCase):
             "USERPROFILE": str(home),
             "CLAUDE_REAL_BIN": str(shim),
             "CAPTURE_ARGS": str(capture),
+            # Default md-copy off so ReconcileMixin tests (which assert context-icon
+            # only) are unaffected; MdCopyReconcileMixin tests pass CC_PATCH_MD_COPY=1.
+            "CC_PATCH_MD_COPY": "0",
         }
         if env_extra:
             env.update(env_extra)
@@ -289,6 +375,7 @@ class WinReconcileTests(ReconcileMixin, unittest.TestCase):
                 "USERPROFILE": str(home),
                 "CLAUDE_REAL_BIN": str(shim),
                 "CAPTURE_ARGS": str(capture),
+                "CC_PATCH_MD_COPY": "0",
             }
             res = run(["node", str(LAUNCHER_WIN), "--thinking=adaptive"], env=env)
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -303,6 +390,8 @@ class ParityTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as td:
                 home = pathlib.Path(td)
                 idx = make_extension(home, f"before {OLD} after")
+                css = idx.with_name("index.css")
+                css.write_text(".x{}\n", encoding="utf-8")
                 if kind == "bash":
                     fake, capture = make_fake_claude(td)
                     env = {
@@ -327,10 +416,16 @@ class ParityTests(unittest.TestCase):
                 results[kind] = (
                     idx.read_text(encoding="utf-8"),
                     captured_args(capture),
+                    css.read_text(encoding="utf-8"),
                 )
-        self.assertEqual(results["bash"][0], results["node"][0])
-        self.assertEqual(results["bash"][1], results["node"][1])
-        self.assertEqual(results["bash"][0], f"before {MARKED} after")
+        # identical bytes from both launchers, for index.js AND index.css
+        self.assertEqual(results["bash"][0], results["node"][0])  # index.js
+        self.assertEqual(results["bash"][2], results["node"][2])  # index.css
+        self.assertEqual(results["bash"][1], results["node"][1])  # injected args
+        # index.js carries the context-icon swap AND the md-copy block; css the block
+        self.assertIn(MARKED, results["bash"][0])
+        self.assertIn(MD_OPEN, results["bash"][0])
+        self.assertIn(MD_OPEN, results["bash"][2])
         self.assertEqual(
             results["bash"][1],
             ["--max-thinking-tokens=200", "--thinking-display", "summarized"],

@@ -217,6 +217,25 @@ Every launch, for each webview file a bundle-patch feature targets, the launcher
 
 Timing note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be *after* the webview already loaded the old bundle. So the first time you enable it you may need two reloads (the spawn patches the file, then the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
 
+**Append features and multiple files.** A feature is either an *in-place* edit
+(context-icon: a marked swap deep in `index.js`) or an *append* (md-copy: a
+sentinel-delimited block at end-of-file). Each append feature's `undo` is
+marker-scoped block removal (it deletes exactly its own OPEN..CLOSE block and
+keeps any bytes after CLOSE), so append features compose with in-place features
+and with each other without overlap, regardless of registration order. The reconcile runs per
+file with that file's own feature list: `index.js` carries `[context-icon,
+md-copy]`; `index.css` carries `[md-copy]`. md-copy's block is byte-identical
+across the bash launcher (quoted heredocs), the node launcher (JSON string
+literals), and the standalone `add-md-copy.py` (base64): `"\n" + OPEN + "\n" +
+PAYLOAD + "\n" + CLOSE + "\n"`, where `OPEN`/`CLOSE` are `/* cc-md-copy v1 */`
+and `/* /cc-md-copy v1 */` and `PAYLOAD` is the source with trailing newlines
+stripped. The payload's single source is `fixes/markdown-copy-export/webview-inject.{js,css}`;
+`tools/gen-embeds` writes the embedded copies and `tools/gen-embeds --check`
+fails the build on drift. The standalone `add-md-copy.py` keeps its own
+`.bak-md-copy` emergency snapshot; its `--revert` is the same reverse transform
+(not a backup restore), so removing md-copy never disturbs a co-applied
+context-icon.
+
 ## How the icon works (context for future changes)
 
 ### Data source resets on reload
