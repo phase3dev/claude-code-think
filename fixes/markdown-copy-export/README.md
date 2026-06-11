@@ -39,8 +39,9 @@ controls and reverts ours on the next launch. `CC_WORKAROUNDS=0` reverts it too.
 - Anchors / selectors: user bubble `[class*="userMessageContainer_"]`; assistant
   bubble `[data-testid="assistant-message"]` (NOT `[data-message-rating]` — that is
   the nested, experiment+analytics-gated rating widget, which the sanitizer strips);
-  chrome strip-prefixes `toolUse_`/`toolResult_`/`toolReference_`/`thinking_`/
-  `unknownContent_` plus `[data-message-rating]` and `button`;
+  chrome strip-prefixes `toolUse_`/`toolResult_`/`toolReference_`/
+  `unknownContent_` plus `[data-message-rating]` and `button`; visible
+  `thinking_` summaries are content and remain copyable;
   clipboard write via a synchronous `document.execCommand("copy")` first
   (gesture-safe and works without a secure context, e.g. remote / code-server),
   falling back to `navigator.clipboard.writeText`; the icon only flips to a

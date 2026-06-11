@@ -5,8 +5,9 @@
 Restores the always-visible context-usage icon in the VS Code chat input.
 Extension builds 2.1.165+ hide that icon until you have used more than 50% of the
 context window. With the 1M context window that is ~500k tokens, so it is
-effectively never shown. This fix flips the threshold so the icon renders
-whenever a context window is known, at any usage level.
+effectively never shown. This fix removes the startup hide guard and flips the
+threshold so the icon renders at any usage level, including the reload gap before
+fresh usage data arrives.
 
 ## Standalone usage
 
@@ -29,12 +30,16 @@ launcher reverts our edit on the next launch.
 
 ## Maintenance Contract
 
-- Anchors / selectors: `>=50)return null}` (component `FJe` in `webview/index.js`).
-- Ownership marker: `/*ccwa-context-icon*/`. Apply rewrites `>=50)return null}` ->
-  `>=101)return null}/*ccwa-context-icon*/`; undo reverses only that marked form.
-- Failure mode if an anchor moves: if the anchor string changes, apply no-ops with
-  a one-line warning (the icon goes missing again) until the anchor is updated. A
-  bare upstream `>=101)return null}` with no marker is never touched.
+- Anchors / selectors: `if(<id>===0)return null;if(<id>>=50)return null}`
+  (component `FJe` in `webview/index.js`). The identifier names are captured, not
+  hardcoded.
+- Ownership marker: `/*ccwa-context-icon:<first-var>:<remaining-var>*/`. Apply
+  rewrites the combined guard to `if(<remaining-var>>=101)return null}<marker>`;
+  undo uses the marker metadata to restore the pristine combined guard with the
+  same variable names. Older `/*ccwa-context-icon*/` markers are recognized as
+  legacy fingerprints.
+- Failure mode if an anchor moves: if the guard shape changes, apply no-ops with a
+  one-line warning (the icon goes missing again) until the anchor is updated.
 - Launcher registry entry: feature id `context-icon`, file `webview/index.js`,
   apply = marked swap, undo = reverse of the marked form only.
 - Test fixture: `tests/test_reconcile.py` (launcher engine, both platforms) and

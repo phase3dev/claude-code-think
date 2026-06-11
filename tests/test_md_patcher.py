@@ -15,7 +15,7 @@ ADD_MD = REPO / "fixes" / "markdown-copy-export" / "add-md-copy.py"
 
 OPEN = "/* cc-md-copy v1 */"
 CLOSE = "/* /cc-md-copy v1 */"
-CONTEXT_MARKED = ">=101)return null}/*ccwa-context-icon*/"
+CONTEXT_MARKED = "if(c>=101)return null}/*ccwa-context-icon*/"
 
 
 def load_mod():

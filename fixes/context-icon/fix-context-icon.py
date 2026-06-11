@@ -17,14 +17,20 @@ renders nothing until you have used MORE THAN 50% of the context window:
     }
 
 With the 1M context window, 50% used = 500,000 tokens, so the icon stays hidden
-for virtually an entire normal session. This script flips the threshold so the
-icon is visible whenever a context window is known (t>0), at any usage level.
+for virtually an entire normal session. This script removes the startup guard and
+flips the threshold so the icon stays visible across reload gaps and then
+self-corrects when fresh usage data arrives.
 
-    if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/   (marked; c maxes at 100)
+    if(t===0)return null;if(c>=50)return null}
+        -> if(c>=101)return null}/*ccwa-context-icon:t:c*/   (marked; c maxes at 100)
 
-The (t===0) guard is left intact. In a resumed window, the webview can still show
-a transient 0% before the first fresh response updates context metadata. After
-that first response the icon stays visible.
+The minified variable names are not stable across builds; the patcher matches the
+guard shape with any ASCII JS identifier pair and stores the matched names in the
+marker so undo can restore the same pristine names.
+
+In a resumed window, the webview can still show a transient 0% before the first
+fresh response updates context metadata. After that first response the icon
+corrects.
 
 SAFE & REVERSIBLE
 -----------------
@@ -48,13 +54,44 @@ Command Palette -> "Developer: Reload Window".
 """
 import glob
 import os
+import re
 import shutil
 import sys
 import tempfile
 
-OLD = ">=50)return null}"
-NEW = ">=101)return null}/*ccwa-context-icon*/"
+IDENT = r"[A-Za-z_$][A-Za-z0-9_$]*"
+OLD_RE = re.compile(rf"if\(({IDENT})===0\)return null;if\(({IDENT})>=50\)return null\}}")
+MARKED_RE = re.compile(
+    rf"if\(({IDENT})>=101\)return null\}}/\*ccwa-context-icon:({IDENT}):\1\*/"
+)
+OLD = "if(t===0)return null;if(c>=50)return null}"
+NEW_BARE = "if(c>=101)return null}"
+NEW_LEGACY = NEW_BARE + "/*ccwa-context-icon*/"
+NEW = "if(c>=101)return null}/*ccwa-context-icon:t:c*/"
+LEGACY_BARE = "if(t===0)return null;if(c>=101)return null}"
+LEGACY_NEW = LEGACY_BARE + "/*ccwa-context-icon*/"
 BACKUP_SUFFIX = ".bak-context-icon"
+
+
+def old_guard(first_var, remaining_var):
+    return f"if({first_var}===0)return null;if({remaining_var}>=50)return null}}"
+
+
+def marked_guard(first_var, remaining_var):
+    return (
+        f"if({remaining_var}>=101)return null}}"
+        f"/*ccwa-context-icon:{first_var}:{remaining_var}*/"
+    )
+
+
+def undo_known_patches(data):
+    data = MARKED_RE.sub(lambda m: old_guard(m.group(2), m.group(1)), data)
+    return (
+        data.replace(LEGACY_NEW, OLD)
+        .replace(NEW_LEGACY, OLD)
+        .replace(LEGACY_BARE, OLD)
+        .replace(NEW_BARE, OLD)
+    )
 
 DISCOVERY_GLOBS = [
     os.path.expanduser("~/.vscode/extensions/anthropic.claude-code-*/webview/index.js"),
@@ -103,18 +140,22 @@ def write_atomic_preserving_metadata(path, text):
 def patch_file(path):
     with open(path, "r", encoding="utf-8", newline="") as f:
         data = f.read()
-    if NEW in data:
+    if MARKED_RE.search(data):
         return "already-patched"
-    n = data.count(OLD)
+    data = undo_known_patches(data)
+    matches = list(OLD_RE.finditer(data))
+    n = len(matches)
     if n == 0:
         return "gate-not-found (extension version changed? re-inspect FJe in index.js)"
     if n > 1:
         return f"ambiguous ({n} matches) — skipped for safety"
+    match = matches[0]
+    patched = data[: match.start()] + marked_guard(match.group(1), match.group(2)) + data[match.end() :]
     backup = path + BACKUP_SUFFIX
     if not os.path.exists(backup):
         with open(backup, "w", encoding="utf-8", newline="") as b:
             b.write(data)
-    write_atomic_preserving_metadata(path, data.replace(OLD, NEW, 1))
+    write_atomic_preserving_metadata(path, patched)
     return "PATCHED"
 
 

@@ -24,10 +24,15 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 LAUNCHER_BASH = REPO / "launcher" / "claudemax"
 LAUNCHER_WIN = REPO / "launcher" / "claudemax.win.js"
 
-OLD = ">=50)return null}"
-MARKER = "/*ccwa-context-icon*/"
-MARKED = ">=101)return null}" + MARKER
-BARE101 = ">=101)return null}"
+OLD = "if(t===0)return null;if(c>=50)return null}"
+MARKER = "/*ccwa-context-icon:t:c*/"
+MARKED = "if(c>=101)return null}" + MARKER
+LEGACY_MARKER = "/*ccwa-context-icon*/"
+LEGACY_CURRENT_MARKED = "if(c>=101)return null}" + LEGACY_MARKER
+LEGACY_MARKED = "if(t===0)return null;if(c>=101)return null}" + LEGACY_MARKER
+BARE101 = "if(t===0)return null;if(c>=101)return null}"
+ALT_OLD = "if(Z===0)return null;if(U>=50)return null}"
+ALT_MARKED = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
 BAK = ".bak-cc-workarounds"
 MD_OPEN = "/* cc-md-copy v1 */"
 MD_CLOSE = "/* /cc-md-copy v1 */"
@@ -86,6 +91,18 @@ class ReconcileMixin:
             self.assertTrue(bak.exists())
             self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_apply_accepts_renamed_minified_guard_vars(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_OLD} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+            bak = idx.with_name(idx.name + BAK)
+            self.assertTrue(bak.exists())
+            self.assertEqual(bak.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+
     def test_reconcile_is_idempotent_and_leaves_no_temp_files(self):
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
@@ -110,6 +127,15 @@ class ReconcileMixin:
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_disabling_feature_reverts_renamed_var_marker_to_same_vars(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_MARKED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
     def test_master_switch_reverts_all_and_injects_nothing(self):
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
@@ -123,11 +149,10 @@ class ReconcileMixin:
 
     def test_legacy_bare_patch_is_upgraded_to_marked_when_enabled(self):
         # A bundle left by the OLD launcher/standalone carries the bare,
-        # unmarked >=101 form. `c` maxes at 100, so >=101 is dead upstream code
-        # that only ever appears as our own output; reconcile adopts it as a
-        # legacy fingerprint, upgrading it to the marked form and capturing the
-        # correct pristine (>=50) snapshot - without the spurious "anchor not
-        # found" warning the marker-only path used to emit on every launch.
+        # unmarked >=101 form while still keeping the old t===0 guard. Reconcile
+        # adopts it as a legacy fingerprint, upgrading it to the current marked
+        # form and capturing the correct pristine combined guard - without the
+        # spurious "anchor not found" warning the marker-only path used to emit.
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
             idx = make_extension(home, f"before {BARE101} after")
@@ -139,12 +164,41 @@ class ReconcileMixin:
             self.assertTrue(bak.exists())
             self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_legacy_marked_patch_is_upgraded_to_show_icon_during_reload_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
+            bak = idx.with_name(idx.name + BAK)
+            self.assertTrue(bak.exists())
+            self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
+
+    def test_legacy_current_marked_patch_is_upgraded_to_metadata_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_CURRENT_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
     def test_legacy_bare_patch_is_reverted_when_feature_disabled(self):
         # Migration-table promise: disabling the fix reverts our edit. A legacy
         # bare patch must revert to pristine just like a marked one does.
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
             idx = make_extension(home, f"before {BARE101} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_marked_patch_is_reverted_when_feature_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_MARKED} after")
             res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")

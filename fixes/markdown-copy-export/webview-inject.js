@@ -151,7 +151,9 @@
         } else if (tag === "BLOCKQUOTE") {
           var inner = block(c).trim().split("\n").map(function (l) { return "> " + l; }).join("\n");
           out += inner + "\n\n";
-        } else if (tag === "HR") out += "---\n\n";
+        } else if (tag === "DETAILS") out += block(c).trim() + "\n\n";
+        else if (tag === "SUMMARY") out += inline(c).trim() + "\n\n";
+        else if (tag === "HR") out += "---\n\n";
         else if (tag === "TABLE") out += table(c) + "\n";
         else if (tag === "BR") out += "\n";
         else if (tag === "STRONG" || tag === "B" || tag === "EM" || tag === "I" ||
@@ -177,11 +179,12 @@
   }
 
   // Class-prefix hooks for non-content chrome that renders *inside* an assistant
-  // bubble (verified on 2.1.170; Task 6 re-pins these). tool*/thinking_ are the v1
-  // exclusions; unknownContent_ is the renderer's fallback for unrecognized block
+  // bubble (verified on 2.1.170; Task 6 re-pins these). Tool blocks are excluded
+  // from message copy; thinking summaries are visible content and must remain
+  // copyable. unknownContent_ is the renderer's fallback for unrecognized block
   // types, so stripping it makes a *future* block type fail safe to excluded rather
   // than leaking "Unsupported content" into the copy. Re-pin if a prefix moves.
-  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "thinking_", "unknownContent_"];
+  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "unknownContent_"];
 
   // True for any node that must never appear in copied output: our own controls,
   // the rating widget (`data-message-rating` + its "Thanks for your feedback"
@@ -199,11 +202,11 @@
   // message's text content only. This is a CORRECTNESS GATE, not cosmetic: the
   // default content node is the whole bubble (all content-block siblings, so multi-
   // block assistant turns are captured), and this strip-list is the only thing
-  // keeping the rating widget and v1-excluded blocks out of the copy.
+  // keeping the rating widget and excluded tool/fallback blocks out of the copy.
   function sanitizeClone(contentNode) {
     var clone = contentNode.cloneNode(true);
     (function strip(node) {
-      var kids = (node.childNodes || []).slice();
+      var kids = Array.prototype.slice.call(node.childNodes || []);
       for (var i = 0; i < kids.length; i++) {
         var c = kids[i];
         if (c.nodeType === 1 && isChrome(c)) { node.removeChild(c); continue; }
@@ -211,6 +214,19 @@
       }
     })(clone);
     return clone;
+  }
+
+  function hasCopyableContent(contentNode, role) {
+    function walk(node) {
+      if (!node) return false;
+      if (node.nodeType === 3) return !!(node.textContent || "").trim();
+      if (node.nodeType !== 1) return false;
+      if (isChrome(node)) return false;
+      var kids = node.childNodes || [];
+      for (var i = 0; i < kids.length; i++) if (walk(kids[i])) return true;
+      return false;
+    }
+    return walk(contentNode);
   }
 
   function classifyBubble(node) {
@@ -244,7 +260,7 @@
   } else if (typeof module !== "undefined" && module.exports) {
     module.exports = { htmlToMarkdown: htmlToMarkdown, sanitizeClone: sanitizeClone,
                        classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown,
-                       copyText: copyText };
+                       hasCopyableContent: hasCopyableContent, copyText: copyText };
   }
 
   // ---- live-webview wiring (runs only when a document exists) ----------------
@@ -254,7 +270,7 @@
   // The content node to convert/copy: the optional ASSISTANT_CONTENT wrapper if
   // pinned and present, else the bubble itself. The bubble already contains every
   // content-block sibling of a multi-block turn, and sanitizeClone strips the
-  // chrome (rating widget, tool/thinking/unknown blocks, buttons, our controls)
+  // chrome (rating widget, tool/unknown blocks, buttons, our controls)
   // either way -- so this is a narrowing, never the thing that guarantees
   // correctness.
   function contentNodeOf(bubble, role) {
@@ -378,6 +394,14 @@
       // guard, which is what produced duplicate rows of buttons; prune any extras
       // every sweep and only add one when none remain.
       var existing = bubble.querySelectorAll ? bubble.querySelectorAll("." + CONTROL_PREFIX) : null;
+      if (!hasCopyableContent(contentNodeOf(bubble, role), role)) {
+        if (existing && existing.length) {
+          for (var j = existing.length - 1; j >= 0; j--) {
+            if (existing[j] && existing[j].parentNode) existing[j].parentNode.removeChild(existing[j]);
+          }
+        }
+        return;
+      }
       if (existing && existing.length) {
         for (var i = existing.length - 1; i >= 1; i--) {
           if (existing[i] && existing[i].parentNode) existing[i].parentNode.removeChild(existing[i]);
