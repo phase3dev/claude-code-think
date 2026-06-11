@@ -17,6 +17,12 @@ NEW_ICON = "if(c>=101)return null}/*ccwa-context-icon:t:c*/"
 ALT_OLD_ICON = "if(Z===0)return null;if(U>=50)return null}"
 ALT_NEW_ICON = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
 ALT_LEGACY_MARKED_ICON = "if(Z===0)return null;if(U>=101)return null}/*ccwa-context-icon*/"
+# Already-wedged state: pristine >=50 gate restored but the bare marker left behind
+# (renamed Z/U vars). undo must strip the orphan marker so patch_file re-applies.
+ALT_WEDGED_ICON = "if(Z===0)return null;if(U>=50)return null}/*ccwa-context-icon*/"
+# Upstream code that resembles a patched value: bare >=101, no marker, no ===0
+# prefix. Not ours - undo must leave it untouched (never rewrite to >=50).
+UNOWNED_BARE101_ICON = "if(U>=101)return null}"
 
 
 def run(cmd, *, env=None, cwd=REPO, timeout=10):
@@ -406,6 +412,38 @@ class PatcherRegressionTests(unittest.TestCase):
             target.write_text(f"before {ALT_LEGACY_MARKED_ICON} after", encoding="utf-8")
             self.assertEqual(mod.patch_file(str(target)), "PATCHED")
             self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
+
+    def test_fix_context_icon_heals_already_wedged_bare_marker(self):
+        # An older buggy undo path could leave the file wedged: the >=50 gate
+        # restored but the bare marker still appended (renamed Z/U vars).
+        # undo_known_patches must strip the orphan marker so patch_file re-applies
+        # rather than treating the leftover marker as already-patched.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            target.write_text(f"before {ALT_WEDGED_ICON} after", encoding="utf-8")
+            self.assertEqual(mod.patch_file(str(target)), "PATCHED")
+            self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
+
+    def test_fix_context_icon_leaves_unowned_bare_101_untouched(self):
+        # Ownership invariant: a bare >=101 guard with no marker and no ===0 prefix
+        # is not ours. undo must not rewrite it to >=50; patch_file reports the
+        # anchor as missing and leaves the file unchanged.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            original = f"before {UNOWNED_BARE101_ICON} after"
+            target.write_text(original, encoding="utf-8")
+            self.assertIn("gate-not-found", mod.patch_file(str(target)))
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
 
     def test_patch_extension_avoids_bash4_mapfile(self):
         source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")

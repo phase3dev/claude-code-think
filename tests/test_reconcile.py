@@ -36,6 +36,15 @@ ALT_MARKED = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
 # A var-agnostic older launcher could write the BARE (metadata-less) marker on a
 # non-t/c build, e.g. Z/U. Undo must recognize it by shape, not the fixed t/c.
 ALT_LEGACY_MARKED = "if(Z===0)return null;if(U>=101)return null}" + LEGACY_MARKER
+# The already-wedged state an OLD buggy undo could commit: the pristine >=50 gate
+# restored but the bare marker left behind (renamed Z/U vars). undo must strip the
+# orphan marker so apply re-patches; otherwise apply early-exits on the marker and
+# the icon stays hidden.
+ALT_WEDGED = ALT_OLD + LEGACY_MARKER
+# Upstream code that merely RESEMBLES a patched value: a bare >=101 guard on a
+# renamed var, with NO marker and NO ===0 prefix. We never write this, so undo must
+# leave it untouched (ownership invariant), never rewrite it to >=50.
+UNOWNED_BARE101 = "if(U>=101)return null}"
 BAK = ".bak-cc-workarounds"
 MD_OPEN = "/* cc-md-copy v1 */"
 MD_CLOSE = "/* /cc-md-copy v1 */"
@@ -208,6 +217,40 @@ class ReconcileMixin:
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
             self.assertNotIn("anchor not found", res.stderr)
+
+    def test_already_wedged_bare_marker_is_healed_and_repatched(self):
+        # An OLD buggy undo could leave the file already wedged: the >=50 gate
+        # restored but the bare marker still appended (renamed Z/U vars). undo's
+        # early-out must not skip the orphan-marker strip, or apply early-exits on
+        # the leftover marker (icon stays hidden). The launcher must heal this on
+        # the next run: strip the orphan marker, then re-patch to the marked form.
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_WEDGED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+
+    def test_already_wedged_bare_marker_reverts_to_pristine_when_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_WEDGED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+
+    def test_unowned_bare_101_guard_is_left_untouched(self):
+        # Ownership invariant: a bare >=101 guard with no marker and no ===0 prefix
+        # is not ours (we always write a marker). undo must NOT rewrite it to >=50 -
+        # that corrupts upstream code that merely resembles a patched value.
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            original = f"before {UNOWNED_BARE101} after"
+            idx = make_extension(home, original)
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), original)
+            self.assertNotIn(">=50)return null}", idx.read_text(encoding="utf-8"))
 
     def test_legacy_bare_patch_is_reverted_when_feature_disabled(self):
         # Migration-table promise: disabling the fix reverts our edit. A legacy
