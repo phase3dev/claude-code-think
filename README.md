@@ -6,25 +6,25 @@ Not affiliated with or endorsed by Anthropic. A future Claude Code update could 
 
 ## Workarounds
 
-1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-08].
+1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-10].
    Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via the launcher (recommended), a one-line extension patch, or a local proxy.
    -> [details](#workaround-1-thinking-summaries)
 
-   ![A populated Thinking summary in the VS Code chat instead of an empty block](media/thinking.png)
+   <img alt="A populated Thinking summary in the VS Code chat instead of an empty block" src="media/thinking.png" style="max-width: 100%; height: auto;">
 
-2. **Missing context-usage icon (1M context window)** [updated 2026-06-08].
+2. **Missing context-usage icon (1M context window)** [updated 2026-06-10].
    The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via the launcher (re-patches the webview on each launch), or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
-   ![The context-usage pie icon and tooltip showing at 19 percent used, below the old 50 percent threshold](media/context-icon.png)
+   <img alt="The context-usage pie icon and tooltip showing at 19 percent used, below the old 50 percent threshold" src="media/context-icon.png" style="max-width: 100%; height: auto;">
 
-3. **No markdown copy / export of chat** [added 2026-06-09].
+3. **No markdown copy / export of chat** [updated 2026-06-10].
    The chat cannot copy a whole message or the whole conversation as Markdown, and
    has no transcript export. Fix via the launcher (adds copy controls, re-applied
    each launch), a standalone patcher, or a standalone session exporter CLI.
    -> [details](fixes/markdown-copy-export/README.md)
 
-   ![Per-message copy controls added to the VS Code chat](media/markdown.png)
+   <img alt="Per-message copy controls added to the VS Code chat" src="media/markdown.png" style="max-width: 100%; height: auto;">
 
 ## Quick start
 
