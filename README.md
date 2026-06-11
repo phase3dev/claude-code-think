@@ -16,7 +16,7 @@ Not affiliated with or endorsed by Anthropic. A future Claude Code update could 
    The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via the launcher (re-patches the webview on each launch), or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
-   <img alt="The context-usage pie icon and tooltip showing at 19 percent used, below the old 50 percent threshold" src="media/context-icon.png" style="max-width: 100%; height: auto;">
+   <img alt="The context-usage icon and tooltip in the VS Code chat input, showing 51 percent context used and 49 percent remaining until auto-compact" src="media/context-icon.png" style="max-width: 100%; height: auto;">
 
 3. **No markdown copy / export of chat** [updated 2026-06-10].
    The chat cannot copy a whole message or the whole conversation as Markdown, and
