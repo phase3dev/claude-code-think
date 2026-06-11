@@ -1,9 +1,14 @@
-/* cc-md-copy: per-message and whole-conversation copy (markdown/plain) for the
+/* cc-md-copy: per-message and whole-conversation copy (Markdown) for the
  * Claude Code VS Code webview. Self-contained IIFE appended to webview/index.js.
- * Additive and read-only w.r.t. app state; keyed on stable CSS-module class
- * prefixes, so it fails safe (controls simply do not appear) if a prefix moves.
+ * Each control is a single clipboard icon that flips to a checkmark for ~2s when a
+ * copy actually succeeds (no text label, no menu). Additive and read-only w.r.t.
+ * app state; keyed on stable CSS-module class prefixes, so it fails safe (controls
+ * simply do not appear) if a prefix moves.
  * Exposes its pure functions for node unit tests; boot()s only in a real webview. */
-(function () {
+/* Leading ';' so that, appended after the bundle, this IIFE can never be parsed as
+ * a call on the bundle's final expression if it lacks a trailing semicolon (ASI
+ * safety across extension builds). */
+;(function () {
   "use strict";
 
   var CONTROL_PREFIX = "cc-md-copy"; // every injected node's class starts with this
@@ -19,7 +24,7 @@
   // not a per-block class (a turn has multiple blocks). "" -> use the bubble itself
   // (already aggregates all blocks; sanitizeClone is the correctness gate).
   var ASSISTANT_CONTENT = "";
-  var FEEDBACK_MS = 1800;
+  var FEEDBACK_MS = 2000; // how long the checkmark shows after a successful copy
 
   // ---- HTML -> Markdown (DOM walk) -------------------------------------------
   // Uses only: nodeType, tagName, childNodes, textContent, getAttribute, className.
@@ -146,7 +151,9 @@
         } else if (tag === "BLOCKQUOTE") {
           var inner = block(c).trim().split("\n").map(function (l) { return "> " + l; }).join("\n");
           out += inner + "\n\n";
-        } else if (tag === "HR") out += "---\n\n";
+        } else if (tag === "DETAILS") out += block(c).trim() + "\n\n";
+        else if (tag === "SUMMARY") out += inline(c).trim() + "\n\n";
+        else if (tag === "HR") out += "---\n\n";
         else if (tag === "TABLE") out += table(c) + "\n";
         else if (tag === "BR") out += "\n";
         else if (tag === "STRONG" || tag === "B" || tag === "EM" || tag === "I" ||
@@ -172,11 +179,12 @@
   }
 
   // Class-prefix hooks for non-content chrome that renders *inside* an assistant
-  // bubble (verified on 2.1.170; Task 6 re-pins these). tool*/thinking_ are the v1
-  // exclusions; unknownContent_ is the renderer's fallback for unrecognized block
+  // bubble (verified on 2.1.170; Task 6 re-pins these). Tool blocks are excluded
+  // from message copy; thinking summaries are visible content and must remain
+  // copyable. unknownContent_ is the renderer's fallback for unrecognized block
   // types, so stripping it makes a *future* block type fail safe to excluded rather
   // than leaking "Unsupported content" into the copy. Re-pin if a prefix moves.
-  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "thinking_", "unknownContent_"];
+  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "unknownContent_"];
 
   // True for any node that must never appear in copied output: our own controls,
   // the rating widget (`data-message-rating` + its "Thanks for your feedback"
@@ -194,11 +202,11 @@
   // message's text content only. This is a CORRECTNESS GATE, not cosmetic: the
   // default content node is the whole bubble (all content-block siblings, so multi-
   // block assistant turns are captured), and this strip-list is the only thing
-  // keeping the rating widget and v1-excluded blocks out of the copy.
+  // keeping the rating widget and excluded tool/fallback blocks out of the copy.
   function sanitizeClone(contentNode) {
     var clone = contentNode.cloneNode(true);
     (function strip(node) {
-      var kids = (node.childNodes || []).slice();
+      var kids = Array.prototype.slice.call(node.childNodes || []);
       for (var i = 0; i < kids.length; i++) {
         var c = kids[i];
         if (c.nodeType === 1 && isChrome(c)) { node.removeChild(c); continue; }
@@ -206,6 +214,19 @@
       }
     })(clone);
     return clone;
+  }
+
+  function hasCopyableContent(contentNode, role) {
+    function walk(node) {
+      if (!node) return false;
+      if (node.nodeType === 3) return !!(node.textContent || "").trim();
+      if (node.nodeType !== 1) return false;
+      if (isChrome(node)) return false;
+      var kids = node.childNodes || [];
+      for (var i = 0; i < kids.length; i++) if (walk(kids[i])) return true;
+      return false;
+    }
+    return walk(contentNode);
   }
 
   function classifyBubble(node) {
@@ -238,7 +259,8 @@
     boot();
   } else if (typeof module !== "undefined" && module.exports) {
     module.exports = { htmlToMarkdown: htmlToMarkdown, sanitizeClone: sanitizeClone,
-                       classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown };
+                       classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown,
+                       hasCopyableContent: hasCopyableContent, copyText: copyText };
   }
 
   // ---- live-webview wiring (runs only when a document exists) ----------------
@@ -248,7 +270,7 @@
   // The content node to convert/copy: the optional ASSISTANT_CONTENT wrapper if
   // pinned and present, else the bubble itself. The bubble already contains every
   // content-block sibling of a multi-block turn, and sanitizeClone strips the
-  // chrome (rating widget, tool/thinking/unknown blocks, buttons, our controls)
+  // chrome (rating widget, tool/unknown blocks, buttons, our controls)
   // either way -- so this is a narrowing, never the thing that guarantees
   // correctness.
   function contentNodeOf(bubble, role) {
@@ -259,64 +281,107 @@
     return bubble;
   }
 
-  function copyText(text) {
+  // Copy `s` via a synchronous execCommand("copy") on an off-screen textarea, and
+  // report whether it actually happened. Done first (and synchronously) because it
+  // runs inside the click gesture and works whether or not the page is a secure
+  // context -- so it covers remote / code-server, where the async Clipboard API is
+  // simply absent. Restores the prior selection/focus so it is invisible.
+  function execCopy(s) {
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
-    } catch (_) {}
-    return Promise.resolve(); // best-effort; never throw into the app
+      if (typeof document === "undefined" || !document.createElement) return false;
+      var prev = document.activeElement || null;
+      var sel = document.getSelection ? document.getSelection() : null;
+      var saved = (sel && sel.rangeCount) ? sel.getRangeAt(0) : null;
+      var ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      (document.body || document.documentElement).appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      if (saved && sel) { try { sel.removeAllRanges(); sel.addRange(saved); } catch (_) {} }
+      if (prev && prev.focus) { try { prev.focus(); } catch (_) {} }
+      return !!ok;
+    } catch (_) { return false; }
   }
 
-  function flashFeedback(host) {
+  // Copy `text` and resolve to whether the copy ACTUALLY happened, so callers only
+  // show success on a real copy -- never a false "copied" (the original bug:
+  // navigator.clipboard was undefined in the webview, the code fell through to
+  // Promise.resolve(), and the UI claimed success while nothing was written). Empty
+  // text is a non-copy -> false. execCommand first (gesture-safe, secure-context-
+  // independent); the async Clipboard API is the fallback. Never throws.
+  function copyText(text) {
+    var s = (text == null) ? "" : String(text);
+    if (!s) return Promise.resolve(false);
+    if (execCopy(s)) return Promise.resolve(true);
     try {
-      var fb = document.createElement("span");
-      fb.className = CONTROL_PREFIX + "-feedback";
-      fb.textContent = "Copied";
-      host.appendChild(fb);
-      setTimeout(function () { if (fb && fb.parentNode) fb.parentNode.removeChild(fb); }, FEEDBACK_MS);
+      if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(s).then(
+          function () { return true; },
+          function () { return false; }
+        );
+      }
     } catch (_) {}
+    return Promise.resolve(false);
   }
 
   function bubbleMarkdown(bubble, role) {
     var clean = sanitizeClone(contentNodeOf(bubble, role));
     return role === "assistant" ? htmlToMarkdown(clean) : (clean.textContent || "").trim();
   }
-  function bubblePlain(bubble, role) {
-    return (sanitizeClone(contentNodeOf(bubble, role)).textContent || "").trim();
+
+  // Inline SVG icons (currentColor, ~14px). Set via innerHTML on our own buttons
+  // only; the markup never reaches copied content (sanitizeClone drops our nodes).
+  var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  var ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+  // Flip the button to a checkmark for FEEDBACK_MS, then restore. Idempotent across
+  // rapid clicks (any pending restore is cleared first).
+  function showCopied(btn) {
+    try {
+      if (btn.__ccTimer) clearTimeout(btn.__ccTimer);
+      btn.classList.add(CONTROL_PREFIX + "-ok");
+      btn.innerHTML = ICON_CHECK;
+      btn.__ccTimer = setTimeout(function () {
+        try { btn.classList.remove(CONTROL_PREFIX + "-ok"); btn.innerHTML = ICON_COPY; } catch (_) {}
+        btn.__ccTimer = null;
+      }, FEEDBACK_MS);
+    } catch (_) {}
   }
 
-  // Build a single control: a primary "Copy" (markdown) plus a small caret that
-  // toggles a menu with "Copy as plain text". All nodes carry the CONTROL_PREFIX
-  // class so sanitizeClone removes them from any copied content.
-  function buildControl(onMarkdown, onPlain) {
+  // Build a single control: one clipboard-icon button. `onCopy()` is invoked
+  // synchronously on click (so the copy stays inside the user gesture) and must
+  // return a Promise<boolean>; the checkmark shows only when it resolves true. All
+  // nodes carry the CONTROL_PREFIX class so sanitizeClone strips them from copies.
+  function buildControl(onCopy, title) {
     var wrap = document.createElement("span");
     wrap.className = CONTROL_PREFIX;
-    var primary = document.createElement("button");
-    primary.type = "button";
-    primary.className = CONTROL_PREFIX + "-btn";
-    primary.title = "Copy as Markdown";
-    primary.textContent = "Copy";
-    primary.addEventListener("click", function (e) { e.stopPropagation(); onMarkdown(primary); });
-    var caret = document.createElement("button");
-    caret.type = "button";
-    caret.className = CONTROL_PREFIX + "-caret";
-    caret.title = "Copy options";
-    caret.textContent = "▾"; // black down-pointing small triangle
-    var menu = document.createElement("span");
-    menu.className = CONTROL_PREFIX + "-menu";
-    menu.style.display = "none";
-    var plain = document.createElement("button");
-    plain.type = "button";
-    plain.className = CONTROL_PREFIX + "-btn";
-    plain.textContent = "Copy as plain text";
-    plain.addEventListener("click", function (e) { e.stopPropagation(); menu.style.display = "none"; onPlain(plain); });
-    menu.appendChild(plain);
-    caret.addEventListener("click", function (e) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = CONTROL_PREFIX + "-btn";
+    btn.title = title || "Copy as Markdown";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = ICON_COPY;
+    var busy = false;
+    btn.addEventListener("click", function (e) {
       e.stopPropagation();
-      menu.style.display = menu.style.display === "none" ? "inline-block" : "none";
+      if (busy) return;
+      busy = true;
+      var p;
+      try { p = onCopy(); } catch (_) { p = false; }
+      Promise.resolve(p).then(
+        function (ok) { busy = false; if (ok) showCopied(btn); },
+        function () { busy = false; }
+      );
     });
-    wrap.appendChild(primary);
-    wrap.appendChild(caret);
-    wrap.appendChild(menu);
+    wrap.appendChild(btn);
     return wrap;
   }
 
@@ -324,54 +389,69 @@
     try {
       var role = classifyBubble(bubble);
       if (!role) return;
-      if (qs(bubble, "." + CONTROL_PREFIX)) return; // already decorated
-      var control = buildControl(
-        function (host) { copyText(bubbleMarkdown(bubble, role)).then(function () { flashFeedback(control); }); },
-        function (host) { copyText(bubblePlain(bubble, role)).then(function () { flashFeedback(control); }); }
-      );
+      // Idempotent: keep exactly one control. A React re-render of the bubble can
+      // leave a stale control behind or transiently defeat an "already decorated"
+      // guard, which is what produced duplicate rows of buttons; prune any extras
+      // every sweep and only add one when none remain.
+      var existing = bubble.querySelectorAll ? bubble.querySelectorAll("." + CONTROL_PREFIX) : null;
+      if (!hasCopyableContent(contentNodeOf(bubble, role), role)) {
+        if (existing && existing.length) {
+          for (var j = existing.length - 1; j >= 0; j--) {
+            if (existing[j] && existing[j].parentNode) existing[j].parentNode.removeChild(existing[j]);
+          }
+        }
+        return;
+      }
+      if (existing && existing.length) {
+        for (var i = existing.length - 1; i >= 1; i--) {
+          if (existing[i] && existing[i].parentNode) existing[i].parentNode.removeChild(existing[i]);
+        }
+        return;
+      }
+      var control = buildControl(function () {
+        return copyText(bubbleMarkdown(bubble, role));
+      }, "Copy as Markdown");
       bubble.appendChild(control);
     } catch (_) {}
   }
 
-  function copyConversation(format) {
+  function copyConversation() {
     var bubbles = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE);
-    if (format === "text") {
-      var lines = [];
-      for (var i = 0; i < bubbles.length; i++) {
-        var role = classifyBubble(bubbles[i]);
-        if (!role) continue;
-        var body = bubblePlain(bubbles[i], role);
-        if (body) lines.push(body);
-      }
-      return copyText(lines.join("\n\n") + (lines.length ? "\n" : ""));
-    }
     return copyText(conversationToMarkdown(bubbles, function (b) {
       return contentNodeOf(b, classifyBubble(b));
     }));
   }
 
+  // A single floating "Copy conversation" icon, present only while a conversation
+  // is open (so it never clutters the history-list view). Pinned top-right by CSS,
+  // clear of the chat input at the bottom; the most-recent-prompt sticky header
+  // sits to its left.
   function installConversationControl() {
     try {
-      if (qs(document, "." + CONTROL_PREFIX + "-conversation")) return;
+      var existing = qs(document, "." + CONTROL_PREFIX + "-conversation");
+      var hasMessages = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE).length > 0;
+      if (!hasMessages) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+      }
+      if (existing) return;
       var bar = document.createElement("div");
       bar.className = CONTROL_PREFIX + "-conversation";
-      var control = buildControl(
-        function () { copyConversation("markdown").then(function () { flashFeedback(bar); }); },
-        function () { copyConversation("text").then(function () { flashFeedback(bar); }); }
-      );
-      control.title = "Copy entire conversation";
-      bar.appendChild(control);
-      document.body.appendChild(bar); // fixed-position via CSS; placement refined in Task 6
+      bar.appendChild(buildControl(copyConversation, "Copy conversation"));
+      document.body.appendChild(bar);
     } catch (_) {}
   }
 
-  function sweep() { var b = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE); for (var i = 0; i < b.length; i++) decorate(b[i]); }
+  function sweep() {
+    var b = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE);
+    for (var i = 0; i < b.length; i++) decorate(b[i]);
+    installConversationControl();
+  }
 
   function boot() {
     try {
       var target = (MESSAGES_CONTAINER && qs(document, MESSAGES_CONTAINER)) || document.body;
       sweep();
-      installConversationControl();
       if (typeof MutationObserver === "undefined") return;
       var obs = new MutationObserver(function () { sweep(); });
       obs.observe(target, { childList: true, subtree: true });

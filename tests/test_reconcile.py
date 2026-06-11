@@ -24,10 +24,27 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 LAUNCHER_BASH = REPO / "launcher" / "claudemax"
 LAUNCHER_WIN = REPO / "launcher" / "claudemax.win.js"
 
-OLD = ">=50)return null}"
-MARKER = "/*ccwa-context-icon*/"
-MARKED = ">=101)return null}" + MARKER
-BARE101 = ">=101)return null}"
+OLD = "if(t===0)return null;if(c>=50)return null}"
+MARKER = "/*ccwa-context-icon:t:c*/"
+MARKED = "if(c>=101)return null}" + MARKER
+LEGACY_MARKER = "/*ccwa-context-icon*/"
+LEGACY_CURRENT_MARKED = "if(c>=101)return null}" + LEGACY_MARKER
+LEGACY_MARKED = "if(t===0)return null;if(c>=101)return null}" + LEGACY_MARKER
+BARE101 = "if(t===0)return null;if(c>=101)return null}"
+ALT_OLD = "if(Z===0)return null;if(U>=50)return null}"
+ALT_MARKED = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
+# A var-agnostic older launcher could write the BARE (metadata-less) marker on a
+# non-t/c build, e.g. Z/U. Undo must recognize it by shape, not the fixed t/c.
+ALT_LEGACY_MARKED = "if(Z===0)return null;if(U>=101)return null}" + LEGACY_MARKER
+# The already-wedged state an OLD buggy undo could commit: the pristine >=50 gate
+# restored but the bare marker left behind (renamed Z/U vars). undo must strip the
+# orphan marker so apply re-patches; otherwise apply early-exits on the marker and
+# the icon stays hidden.
+ALT_WEDGED = ALT_OLD + LEGACY_MARKER
+# Upstream code that merely RESEMBLES a patched value: a bare >=101 guard on a
+# renamed var, with NO marker and NO ===0 prefix. We never write this, so undo must
+# leave it untouched (ownership invariant), never rewrite it to >=50.
+UNOWNED_BARE101 = "if(U>=101)return null}"
 BAK = ".bak-cc-workarounds"
 MD_OPEN = "/* cc-md-copy v1 */"
 MD_CLOSE = "/* /cc-md-copy v1 */"
@@ -86,6 +103,18 @@ class ReconcileMixin:
             self.assertTrue(bak.exists())
             self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_apply_accepts_renamed_minified_guard_vars(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_OLD} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+            bak = idx.with_name(idx.name + BAK)
+            self.assertTrue(bak.exists())
+            self.assertEqual(bak.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+
     def test_reconcile_is_idempotent_and_leaves_no_temp_files(self):
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
@@ -110,6 +139,15 @@ class ReconcileMixin:
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_disabling_feature_reverts_renamed_var_marker_to_same_vars(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_MARKED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
     def test_master_switch_reverts_all_and_injects_nothing(self):
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
@@ -123,11 +161,10 @@ class ReconcileMixin:
 
     def test_legacy_bare_patch_is_upgraded_to_marked_when_enabled(self):
         # A bundle left by the OLD launcher/standalone carries the bare,
-        # unmarked >=101 form. `c` maxes at 100, so >=101 is dead upstream code
-        # that only ever appears as our own output; reconcile adopts it as a
-        # legacy fingerprint, upgrading it to the marked form and capturing the
-        # correct pristine (>=50) snapshot - without the spurious "anchor not
-        # found" warning the marker-only path used to emit on every launch.
+        # unmarked >=101 form while still keeping the old t===0 guard. Reconcile
+        # adopts it as a legacy fingerprint, upgrading it to the current marked
+        # form and capturing the correct pristine combined guard - without the
+        # spurious "anchor not found" warning the marker-only path used to emit.
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
             idx = make_extension(home, f"before {BARE101} after")
@@ -139,12 +176,97 @@ class ReconcileMixin:
             self.assertTrue(bak.exists())
             self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
 
+    def test_legacy_marked_patch_is_upgraded_to_show_icon_during_reload_gap(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
+            bak = idx.with_name(idx.name + BAK)
+            self.assertTrue(bak.exists())
+            self.assertEqual(bak.read_text(encoding="utf-8"), f"before {OLD} after")
+
+    def test_legacy_current_marked_patch_is_upgraded_to_metadata_marker(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_CURRENT_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_bare_marked_patch_with_renamed_vars_is_upgraded(self):
+        # A bare (metadata-less) marker on a non-t/c build (Z/U). Undo must match
+        # the guard pair by shape and strip the marker so apply re-patches; the
+        # t/c-only fallback otherwise leaves the marker, and apply then exits early
+        # on it, committing the original >=50 gate (icon stays hidden).
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_LEGACY_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_bare_marked_patch_with_renamed_vars_reverts_when_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_LEGACY_MARKED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_already_wedged_bare_marker_is_healed_and_repatched(self):
+        # An OLD buggy undo could leave the file already wedged: the >=50 gate
+        # restored but the bare marker still appended (renamed Z/U vars). undo's
+        # early-out must not skip the orphan-marker strip, or apply early-exits on
+        # the leftover marker (icon stays hidden). The launcher must heal this on
+        # the next run: strip the orphan marker, then re-patch to the marked form.
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_WEDGED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+
+    def test_already_wedged_bare_marker_reverts_to_pristine_when_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_WEDGED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
+
+    def test_unowned_bare_101_guard_is_left_untouched(self):
+        # Ownership invariant: a bare >=101 guard with no marker and no ===0 prefix
+        # is not ours (we always write a marker). undo must NOT rewrite it to >=50 -
+        # that corrupts upstream code that merely resembles a patched value.
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            original = f"before {UNOWNED_BARE101} after"
+            idx = make_extension(home, original)
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), original)
+            self.assertNotIn(">=50)return null}", idx.read_text(encoding="utf-8"))
+
     def test_legacy_bare_patch_is_reverted_when_feature_disabled(self):
         # Migration-table promise: disabling the fix reverts our edit. A legacy
         # bare patch must revert to pristine just like a marked one does.
         with tempfile.TemporaryDirectory() as td:
             home = pathlib.Path(td)
             idx = make_extension(home, f"before {BARE101} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_marked_patch_is_reverted_when_feature_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {LEGACY_MARKED} after")
             res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {OLD} after")

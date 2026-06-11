@@ -4,10 +4,11 @@
 
 The Claude Code VS Code chat has no way to copy a whole message or the whole
 conversation as Markdown (only code blocks have a copy button). This adds a
-per-message copy control (Markdown primary, plain text secondary) on every user
-and assistant message, a "copy entire conversation" control, and a standalone
-CLI that exports a session transcript to Markdown/plain text or opens the raw
-`.jsonl`. Affects the VS Code extension webview; the CLI is independent of it.
+single-click copy icon (Markdown) on every user and assistant message - it flips
+to a checkmark only when the copy actually lands - plus a floating "copy
+conversation" icon, and a standalone CLI that exports a session transcript to
+Markdown or plain text. Affects the VS Code extension webview; the CLI is
+independent of it.
 
 ## Standalone usage
 
@@ -27,7 +28,6 @@ Session exporter (independent of the webview):
     python3 fixes/markdown-copy-export/cc-export.py --format text
     python3 fixes/markdown-copy-export/cc-export.py --include-thinking --include-tools
     python3 fixes/markdown-copy-export/cc-export.py --session ID -o out.md
-    python3 fixes/markdown-copy-export/cc-export.py --open          # open raw .jsonl in VS Code
 
 ## Launcher toggle
 
@@ -39,10 +39,13 @@ controls and reverts ours on the next launch. `CC_WORKAROUNDS=0` reverts it too.
 - Anchors / selectors: user bubble `[class*="userMessageContainer_"]`; assistant
   bubble `[data-testid="assistant-message"]` (NOT `[data-message-rating]` — that is
   the nested, experiment+analytics-gated rating widget, which the sanitizer strips);
-  chrome strip-prefixes `toolUse_`/`toolResult_`/`toolReference_`/`thinking_`/
-  `unknownContent_` plus `[data-message-rating]` and `button`;
-  `navigator.clipboard.writeText` (proven to work via the built-in copy-code
-  button). Optional refinements pinned at install: the messages container and the
+  chrome strip-prefixes `toolUse_`/`toolResult_`/`toolReference_`/
+  `unknownContent_` plus `[data-message-rating]` and `button`; visible
+  `thinking_` summaries are content and remain copyable;
+  clipboard write via a synchronous `document.execCommand("copy")` first
+  (gesture-safe and works without a secure context, e.g. remote / code-server),
+  falling back to `navigator.clipboard.writeText`; the icon only flips to a
+  checkmark when a copy actually succeeds. Optional refinements pinned at install: the messages container and the
   single all-content wrapper, if any (see the inject source constants
   `MESSAGES_CONTAINER` / `ASSISTANT_CONTENT`). When a bundle update renames the
   bubble anchor or a chrome hook, the Phase-9 selector guard fails loudly; re-pin

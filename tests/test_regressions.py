@@ -12,8 +12,17 @@ import unittest
 
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-OLD_ICON = ">=50)return null}"
-NEW_ICON = ">=101)return null}"
+OLD_ICON = "if(t===0)return null;if(c>=50)return null}"
+NEW_ICON = "if(c>=101)return null}/*ccwa-context-icon:t:c*/"
+ALT_OLD_ICON = "if(Z===0)return null;if(U>=50)return null}"
+ALT_NEW_ICON = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
+ALT_LEGACY_MARKED_ICON = "if(Z===0)return null;if(U>=101)return null}/*ccwa-context-icon*/"
+# Already-wedged state: pristine >=50 gate restored but the bare marker left behind
+# (renamed Z/U vars). undo must strip the orphan marker so patch_file re-applies.
+ALT_WEDGED_ICON = "if(Z===0)return null;if(U>=50)return null}/*ccwa-context-icon*/"
+# Upstream code that resembles a patched value: bare >=101, no marker, no ===0
+# prefix. Not ours - undo must leave it untouched (never rewrite to >=50).
+UNOWNED_BARE101_ICON = "if(U>=101)return null}"
 
 
 def run(cmd, *, env=None, cwd=REPO, timeout=10):
@@ -184,6 +193,115 @@ class LauncherRegressionTests(unittest.TestCase):
                         ],
                     )
 
+    # CC_SCRUB_ROUTING clears third-party model-routing env vars before launch so
+    # Claude Code lands on the default Anthropic account. Default off (env intact).
+    ROUTING_KEYS = [
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    ]
+
+    @staticmethod
+    def _routing_env(td):
+        return {
+            "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+            "ANTHROPIC_AUTH_TOKEN": "secret-token",
+            "CLAUDE_CONFIG_DIR": str(pathlib.Path(td) / "cfg"),
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-pro",
+        }
+
+    @unittest.skipIf(os.name == "nt", "POSIX Bash launcher test")
+    def test_bash_launcher_scrubs_routing_env_only_when_enabled(self):
+        keys = self.ROUTING_KEYS
+        with tempfile.TemporaryDirectory() as td:
+            fake = pathlib.Path(td) / "claude"
+            capture = pathlib.Path(td) / "env.json"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                "python3 - <<'PY'\n"
+                "import json, os\n"
+                "keys = json.loads(os.environ['CAPTURE_KEYS'])\n"
+                "data = {}\n"
+                "for k in keys:\n"
+                "    data[k] = os.environ.get(k)\n"
+                "open(os.environ['CAPTURE_ENV'], 'w').write(json.dumps(data))\n"
+                "PY\n",
+                encoding="utf-8",
+            )
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+
+            routing = self._routing_env(td)
+            base = {
+                "HOME": td,            # keep reconcile away from real webview bundles
+                "CC_RECONCILE": "0",   # do not read or write any bundle this launch
+                "CLAUDE_REAL_BIN": str(fake),
+                "CAPTURE_ENV": str(capture),
+                "CAPTURE_KEYS": json.dumps(keys),
+                **routing,
+            }
+            launcher = str(REPO / "launcher" / "claudemax")
+
+            res = run([launcher], env=base)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), routing)
+
+            res = run([launcher], env={**base, "CC_SCRUB_ROUTING": "1"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(
+                json.loads(capture.read_text(encoding="utf-8")),
+                {k: None for k in keys},
+            )
+
+    def test_windows_launcher_scrubs_routing_env_only_when_enabled(self):
+        keys = self.ROUTING_KEYS
+        with tempfile.TemporaryDirectory() as td:
+            temp = pathlib.Path(td)
+            capture = temp / "env.json"
+            cli = temp / "cli.js"
+            cli.write_text(
+                "const fs = require('fs');\n"
+                "const keys = JSON.parse(process.env.CAPTURE_KEYS);\n"
+                "const out = {};\n"
+                "for (const k of keys) out[k] = (k in process.env) ? process.env[k] : null;\n"
+                "fs.writeFileSync(process.env.CAPTURE_ENV, JSON.stringify(out));\n",
+                encoding="utf-8",
+            )
+            shim = make_fake_cmd_shim(td, cli)
+
+            routing = self._routing_env(td)
+            base = {
+                "HOME": td,
+                "USERPROFILE": td,
+                "CC_RECONCILE": "0",
+                "CLAUDE_REAL_BIN": str(shim),
+                "CAPTURE_ENV": str(capture),
+                "CAPTURE_KEYS": json.dumps(keys),
+                **routing,
+            }
+            launcher = str(REPO / "launcher" / "claudemax.win.js")
+
+            res = run(["node", launcher], env=base)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(json.loads(capture.read_text(encoding="utf-8")), routing)
+
+            res = run(["node", launcher], env={**base, "CC_SCRUB_ROUTING": "1"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(
+                json.loads(capture.read_text(encoding="utf-8")),
+                {k: None for k in keys},
+            )
+
+    def test_launchers_expose_local_env_injection_anchor(self):
+        # The marker pair is a stable contract: the Linux deploy step and the
+        # Windows build.ps1 splice a private env file between these lines.
+        for name in ("claudemax", "claudemax.win.js"):
+            with self.subTest(launcher=name):
+                src = (REPO / "launcher" / name).read_text(encoding="utf-8")
+                self.assertIn("CC_SCRUB_ROUTING", src)
+                self.assertIn(">>> ccwa-local-env >>>", src)
+                self.assertIn("<<< ccwa-local-env <<<", src)
+
 
 class ProxyRegressionTests(unittest.TestCase):
     def test_proxy_exports_header_filters_that_strip_hop_by_hop_headers(self):
@@ -255,11 +373,77 @@ class PatcherRegressionTests(unittest.TestCase):
             self.assertEqual(after.st_uid, before.st_uid)
             self.assertEqual(after.st_gid, before.st_gid)
             patched_text = target.read_text(encoding="utf-8")
-            self.assertIn("/*ccwa-context-icon*/", patched_text)
+            self.assertIn("/*ccwa-context-icon", patched_text)
             self.assertEqual(patched_text, f"before {mod.NEW} after")
             self.assertTrue((pathlib.Path(str(target) + mod.BACKUP_SUFFIX)).exists())
             # Idempotent: a second patch is a no-op.
             self.assertEqual(mod.patch_file(str(target)), "already-patched")
+
+    def test_fix_context_icon_patches_renamed_minified_guard_vars(self):
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            target.write_text(f"before {ALT_OLD_ICON} after", encoding="utf-8")
+
+            self.assertEqual(mod.patch_file(str(target)), "PATCHED")
+            self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
+            backup = pathlib.Path(str(target) + mod.BACKUP_SUFFIX)
+            self.assertEqual(backup.read_text(encoding="utf-8"), f"before {ALT_OLD_ICON} after")
+            self.assertEqual(mod.patch_file(str(target)), "already-patched")
+
+    def test_fix_context_icon_upgrades_renamed_bare_marked_patch(self):
+        # A bundle left by an older var-agnostic patcher carries a BARE
+        # (metadata-less) marker on non-t/c guard vars. undo_known_patches must
+        # recognize it by shape, not the fixed t/c, so patch_file re-applies and
+        # upgrades it to the metadata marker rather than reporting gate-not-found.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            target.write_text(f"before {ALT_LEGACY_MARKED_ICON} after", encoding="utf-8")
+            self.assertEqual(mod.patch_file(str(target)), "PATCHED")
+            self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
+
+    def test_fix_context_icon_heals_already_wedged_bare_marker(self):
+        # An older buggy undo path could leave the file wedged: the >=50 gate
+        # restored but the bare marker still appended (renamed Z/U vars).
+        # undo_known_patches must strip the orphan marker so patch_file re-applies
+        # rather than treating the leftover marker as already-patched.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            target.write_text(f"before {ALT_WEDGED_ICON} after", encoding="utf-8")
+            self.assertEqual(mod.patch_file(str(target)), "PATCHED")
+            self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
+
+    def test_fix_context_icon_leaves_unowned_bare_101_untouched(self):
+        # Ownership invariant: a bare >=101 guard with no marker and no ===0 prefix
+        # is not ours. undo must not rewrite it to >=50; patch_file reports the
+        # anchor as missing and leaves the file unchanged.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            original = f"before {UNOWNED_BARE101_ICON} after"
+            target.write_text(original, encoding="utf-8")
+            self.assertIn("gate-not-found", mod.patch_file(str(target)))
+            self.assertEqual(target.read_text(encoding="utf-8"), original)
 
     def test_patch_extension_avoids_bash4_mapfile(self):
         source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")

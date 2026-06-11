@@ -110,6 +110,15 @@ class ConverterTests(unittest.TestCase):
         self.assertIn("````md", out)
         self.assertTrue(out.strip().endswith("````"))
 
+    def test_details_summary_separates_thinking_header_from_body(self):
+        out = convert(
+            "el('details',{},["
+            "  el('summary',{},[txt('Thought for 2s')]),"
+            "  el('div',{},[el('p',{},[txt('visible thinking summary')])]),"
+            "])"
+        )
+        self.assertIn("Thought for 2s\n\nvisible thinking summary", out)
+
 
 if __name__ == "__main__":
     unittest.main()

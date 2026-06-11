@@ -96,6 +96,8 @@ The launcher intentionally sets no environment of its own by default; it only ad
 
 ### Option 2: extension.js patch
 
+> **Unmaintained.** Documented for reference. VS Code only, and must be re-applied after every extension update; the launcher (Option 1) is the supported fix.
+
 A one-line change so the non-interactive spawn always forwards the flag:
 
 ```js
@@ -112,6 +114,8 @@ The array variable (`B` here) is minified and renames between builds (`q` in 2.1
 Toggle idea (untested): changing the line to `l.display || (process.env.CC_THINKING_DISPLAY || "summarized")` would let a `CC_THINKING_DISPLAY=omitted` env var (e.g. in VS Code `settings.json`) hide thinking while unset/`summarized` shows it, a way to honor an on/off switch without a code change each time. Not tested.
 
 ### Option 3: local proxy (design)
+
+> **Unmaintained and untested.** A design and a working starting point, not a turnkey fix; it sits in the path of your live auth token. The launcher (Option 1) is the supported fix.
 
 The most thorough fix: a small localhost forward proxy that injects the field at the wire level, so it is surface-agnostic (VS Code + CLI + SDK), needs no install edits, and survives updates. It works because every Claude Code surface resolves the API host as:
 
@@ -172,17 +176,17 @@ function FJe({usedTokens:e, contextWindow:t, onCompact:i, buttonClassName:n}) {
 }
 ```
 
-`c` is the percent of context *remaining*, so `c >= 50` hides the icon whenever at least half the window is free, i.e. it only appears once more than 50% is used. With a 1M window that is 500k tokens. Older bundles (`2.1.131`, `2.1.128`) do not contain this gate; it appeared around `2.1.165`, which matches users' recollection that the icon used to be visible.
+`c` is the percent of context *remaining*, so `c >= 50` hides the icon whenever at least half the window is free, i.e. it only appears once more than 50% is used. With a 1M window that is 500k tokens. The same guard shape is present in the locally inspected `2.1.131` (`Z/U`) and `2.1.170` (`t/c`) bundles, with different minified names.
 
 The `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` env var that circulates in the issue threads only shrinks the window to 200k so 50% (100k) is reached sooner. It does not touch the threshold and forces giving up the 1M window, so it is not a real fix.
 
 ## The fix
 
 ```text
-if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
+if(t===0)return null;if(c>=50)return null}   ->   if(c>=101)return null}/*ccwa-context-icon:t:c*/
 ```
 
-`c` is in `[0, 100]`, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard is left intact, so nothing renders before a context window is known. Using `>=101` (rather than deleting the line) is the smallest, most legible, greppable, reversible change, and it preserves the surrounding structure for a clean string substitution. The patch is anchored on the literal `>=50)return null}`, which is stable across builds even though the minified names around it are not, and which occurs exactly once in `2.1.169`. The trailing `/*ccwa-context-icon*/` is an ownership marker: the launcher's reconcile reverses only the marked form, so it can never corrupt upstream code that merely matches a patched value, and a pre-existing unmarked patch from an older launcher is left as-is and re-marked on the next fresh bundle.
+`c` is in `[0, 100]`, so `c >= 101` is never true and the gate never hides the icon. Removing `if (t === 0) return null` keeps the icon visible across window-reload gaps where the webview has not repopulated usage data yet; the tooltip can briefly read `0%` until the next usage event arrives. Using `>=101` (rather than deleting the line) is the smallest, most legible, greppable, reversible threshold change, while removing the adjacent startup guard addresses the reload case explicitly. The patch is anchored on the combined guard shape `if(<id>===0)return null;if(<id>>=50)return null}`, not the exact minified names. The trailing `/*ccwa-context-icon:<first-var>:<remaining-var>*/` is an ownership marker that stores the matched names: the launcher's reconcile reverses only known patch fingerprints, so it can never corrupt unrelated upstream code; pre-existing legacy patched forms are normalized to pristine and re-applied on the next launch.
 
 There is no integrity or subresource check on the webview bundle (the only `sha256` references in `extension.js` belong to a bundled crypto library), so an edited `index.js` loads normally.
 
@@ -197,8 +201,8 @@ The wrapper discovers `index.js` two ways:
 
 The edit is made safe:
 
-* Idempotent: writes only when the recomputed bytes differ, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
-* Ownership-marked: the edit carries a `/*ccwa-context-icon*/` marker; reconcile reverses only its own marked edit and never touches upstream code that merely resembles a patched value.
+* Idempotent: writes only when the recomputed bytes differ, and skips (rather than guesses) if the combined guard shape is absent because the extension changed.
+* Ownership-marked: the edit carries a `/*ccwa-context-icon:<first-var>:<remaining-var>*/` marker; reconcile reverses only its own marked edit and never touches upstream code that merely resembles a patched value. Older `/*ccwa-context-icon*/` forms are treated as legacy fingerprints.
 * Atomic: written to a temp file and moved into place only after it is verified non-empty and actually patched, so a failed or partial write cannot corrupt the bundle.
 * Metadata-preserving via `cp -p` (portable; the GNU-only `chmod`/`chown --reference` is avoided so it also works on macOS/BSD). The Windows launcher writes with `fs.writeFileSync` + `fs.renameSync`, inheriting the parent directory's ACLs (it does not preserve the file mode - the one intentional bash/node asymmetry).
 * Fully guarded so it never blocks the launch (a read-only file, a renamed bundle, or a missing tool simply no-ops).
@@ -251,9 +255,9 @@ React.createElement(FJe, {
 });
 ```
 
-`usageData` initializes to all zeros and is only filled by usage events that arrive during an assistant turn. There is no seeding from `get_claude_state` on resume, so immediately after a window reload of a continued conversation, before any new turn, the store is still `{0,0,0,0}`: `usedTokens = 0` (the tooltip reads "0% used") and `contextWindow = 0 - 0 - 13000 = -13000` (negative, so the `t === 0` guard does not fire and, after the patch, the icon still renders at 0%). This self-corrects on the next turn, when a usage event fills the store with the real totals. `/context` does not use this store; it queries the CLI directly, so it always shows the true number.
+`usageData` initializes to all zeros and is only filled by usage events that arrive during an assistant turn. There is no seeding from `get_claude_state` on resume, so immediately after a window reload of a continued conversation, before any new turn, the store is still empty: the tooltip can read "0% used" until a usage event fills the store with the real totals. The patch removes the `t === 0` hide guard so this state still renders an icon instead of hiding it for the whole reload gap. `/context` does not use this store; it queries the CLI directly, so it always shows the true number.
 
-If showing a transient 0% is undesirable, changing `if(t===0)return null` to `if(t<=0)return null` hides the icon while the store is empty (`t` is negative then) and shows it with the correct value after the first turn. This is documented as an optional manual tweak and is not applied by default.
+The transient `0%` is deliberate: it is the same stale-data symptom the extension can already show, and it is less confusing than no icon at all after a reload.
 
 ### The glyph is a coarse 3-state gauge
 
@@ -269,4 +273,4 @@ The pie button's `onClick` is `onCompact`: clicking the icon triggers compaction
 
 ## Compatibility
 
-Confirmed on VS Code extension `2.1.169` (native-binary CLI) on Windows 11 and Ubuntu 24.04. The `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch keys off the stable substring `>=50)return null}`, not the minified component name; if a future build changes that exact substring, the launcher safely no-ops (the icon goes missing again) until the anchor is updated. The standalone [`fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) applies the same change directly and supports `--revert`.
+Confirmed on VS Code extension `2.1.169` (native-binary CLI) on Windows 11 and Ubuntu 24.04. The same guard shape has been observed with different minified names (`Z/U` in `2.1.131`, `t/c` in `2.1.170`). The patch keys off that shape, not the minified component name or exact variable names; if a future build changes the shape, the launcher safely no-ops (the icon goes missing again) until the anchor is updated. The standalone [`fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) applies the same change directly and supports `--revert`.

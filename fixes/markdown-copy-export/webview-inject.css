@@ -1,53 +1,54 @@
 .cc-md-copy {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
   vertical-align: middle;
   margin-left: 6px;
 }
-.cc-md-copy-btn,
-.cc-md-copy-caret {
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 1px 6px;
+.cc-md-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
   color: var(--vscode-foreground);
   background: transparent;
-  border: 1px solid var(--vscode-widget-border, transparent);
+  border: none;
   border-radius: 4px;
   cursor: pointer;
-  opacity: 0.65;
+  opacity: 0.6;
 }
-.cc-md-copy-btn:hover,
-.cc-md-copy-caret:hover {
+.cc-md-copy-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.cc-md-copy-btn:hover {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }
-.cc-md-copy-menu {
-  position: relative;
-  margin-left: 4px;
-  padding: 2px;
-  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
-  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
-  border-radius: 4px;
-  z-index: 5;
+/* Success state: the icon is a green checkmark for a moment after a real copy. */
+.cc-md-copy-btn.cc-md-copy-ok,
+.cc-md-copy-btn.cc-md-copy-ok:hover {
+  opacity: 1;
+  color: var(--vscode-charts-green, var(--vscode-testing-iconPassed, #89d185));
+  background: transparent;
 }
-.cc-md-copy-feedback {
-  margin-left: 6px;
-  font-size: 11px;
-  opacity: 0.85;
-  color: var(--vscode-foreground);
-}
+/* Whole-conversation copy: a single floating icon pinned to the top-right corner,
+   clear of the chat input at the bottom. Shown only while a conversation is open
+   (the IIFE adds/removes it). Nudge top/right here if it crowds the sticky header. */
 .cc-md-copy-conversation {
   position: fixed;
-  right: 16px;
-  bottom: 56px;
-  z-index: 10;
+  top: 26px;
+  right: 4px;
+  z-index: 30;
+  display: inline-flex;
   padding: 2px;
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-widget-border, transparent);
   border-radius: 6px;
   opacity: 0.85;
+}
+.cc-md-copy-conversation .cc-md-copy {
+  margin-left: 0;
 }
 .cc-md-copy-conversation:hover {
   opacity: 1;

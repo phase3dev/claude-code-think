@@ -4,14 +4,13 @@
 Reads the session JSONL directly (the high-fidelity source: exact text, no
 re-conversion), so it is independent of the VS Code webview. Default output is
 the readable conversation only (user text + assistant text); thinking and tool
-calls are opt-in. `--open` opens the raw .jsonl in the editor instead.
+calls are opt-in.
 
     python3 cc-export.py                       # latest session in this cwd -> stdout (markdown)
     python3 cc-export.py --session ID          # a specific session id
     python3 cc-export.py --format text         # plain text
     python3 cc-export.py --include-thinking --include-tools
     python3 cc-export.py -o out.md             # write to a file
-    python3 cc-export.py --open                # open the raw transcript in VS Code
     python3 cc-export.py --cwd /path/to/proj   # resolve as if launched from there
 
 The JSONL is an internal format that can change, so each row's shape is validated
@@ -21,7 +20,6 @@ import argparse
 import glob
 import json
 import os
-import subprocess
 import sys
 import unicodedata
 
@@ -157,7 +155,6 @@ def main(argv=None, config=None, env=None):
     ap.add_argument("--format", choices=("markdown", "text"), default="markdown")
     ap.add_argument("--include-thinking", action="store_true")
     ap.add_argument("--include-tools", action="store_true")
-    ap.add_argument("--open", action="store_true", help="open the raw .jsonl in VS Code")
     ap.add_argument("-o", "--output", default=None, help="write to FILE (default: stdout)")
     args = ap.parse_args(argv)
 
@@ -167,15 +164,6 @@ def main(argv=None, config=None, env=None):
     if not path:
         sys.stderr.write("cc-export: no matching session transcript found\n")
         return 1
-
-    if args.open:
-        editor = env.get("CC_EDITOR", "code")
-        try:
-            subprocess.run([editor, path], check=False, env=env)
-        except FileNotFoundError:
-            sys.stderr.write(f"cc-export: editor '{editor}' not found on PATH\n")
-            return 1
-        return 0
 
     out = render(
         read_rows(path),

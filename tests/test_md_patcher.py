@@ -6,6 +6,7 @@ import importlib.util
 import os
 import pathlib
 import stat
+import subprocess
 import tempfile
 import unittest
 
@@ -14,7 +15,7 @@ ADD_MD = REPO / "fixes" / "markdown-copy-export" / "add-md-copy.py"
 
 OPEN = "/* cc-md-copy v1 */"
 CLOSE = "/* /cc-md-copy v1 */"
-CONTEXT_MARKED = ">=101)return null}/*ccwa-context-icon*/"
+CONTEXT_MARKED = "if(c>=101)return null}/*ccwa-context-icon*/"
 
 
 def load_mod():
@@ -37,6 +38,16 @@ class PatcherTests(unittest.TestCase):
         self.mod = load_mod()
         self.assertTrue(self.mod.INJECT_JS.strip(), "embed not generated; run tools/gen-embeds")
         self.assertTrue(self.mod.INJECT_CSS.strip(), "embed not generated; run tools/gen-embeds")
+
+    def test_appended_block_is_asi_safe_after_no_semicolon_bundle(self):
+        # If the bundle's last statement is an expression with no trailing semicolon,
+        # the appended IIFE must not parse as a call on it (ASI). The payload's leading
+        # ';' guards this; executing the patched bundle under node must not throw.
+        with tempfile.TemporaryDirectory() as td:
+            js, _ = make_webview(td, "globalThis.__ccwa_marker = 1\n")  # no trailing ;
+            self.assertEqual(self.mod.patch_file(str(js), self.mod.INJECT_JS), "PATCHED")
+            res = subprocess.run(["node", str(js)], capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
 
     def test_apply_appends_sentinel_block_to_both_files(self):
         with tempfile.TemporaryDirectory() as td:

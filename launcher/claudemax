@@ -12,8 +12,9 @@
 #      fix #1) this wrapper idempotently patches the extension's webview bundle on
 #      each launch, flipping the threshold so the icon shows at any usage level.
 #      Because it re-applies every launch, it survives extension updates.
-#   3. Adds per-message and whole-conversation "Copy" controls (Markdown / plain
-#      text) to the VS Code chat. Like fix #2 there is no env/CLI lever, so this
+#   3. Adds a single-click "Copy as Markdown" icon to every message (and a floating
+#      "copy conversation" icon) in the VS Code chat; the icon flips to a checkmark
+#      only when the copy truly lands. Like fix #2 there is no env/CLI lever, so this
 #      wrapper idempotently appends a self-contained block to the webview bundle
 #      (index.js + index.css) each launch; it fails safe (the controls simply do
 #      not appear if the markup moves) and survives extension updates.
@@ -45,6 +46,7 @@
 #   export CC_PATCH_MD_COPY=0               # no copy controls / webview append (1)
 #   export CC_WORKAROUNDS=0                 # master: disable every fix         (1)
 #   export CC_RECONCILE=0                   # do not touch the webview bundle   (1)
+#   export CC_SCRUB_ROUTING=1               # force the default Anthropic account (0)
 #
 # The real `claude` must be installed. This wrapper finds it automatically; if it
 # cannot, set CLAUDE_REAL_BIN to the full path of your real claude binary.
@@ -143,6 +145,35 @@ CC_PATCH_MD_COPY="${CC_PATCH_MD_COPY:-1}"
 # Longer network timeout for large requests:
 #   export API_TIMEOUT_MS="${API_TIMEOUT_MS:-600000}"
 
+# --- Routing scrub + local environment --------------------------------------
+#
+# CC_SCRUB_ROUTING=1 clears third-party model-routing variables before launch so
+# Claude Code always uses the default Anthropic account. Useful when you also run
+# wrappers (e.g. a DeepSeek launcher) that export ANTHROPIC_BASE_URL /
+# ANTHROPIC_AUTH_TOKEN / *_MODEL to point Claude Code at a non-Anthropic model.
+# Default 0: leave the environment as-is.
+CC_SCRUB_ROUTING="${CC_SCRUB_ROUTING:-0}"
+if [ "$CC_SCRUB_ROUTING" != "0" ]; then
+  unset CLAUDE_CONFIG_DIR \
+        ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN ANTHROPIC_MODEL \
+        ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL CLAUDE_CODE_SUBAGENT_MODEL \
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION \
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION \
+        ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES \
+        ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES 2>/dev/null || true
+fi
+
+# Personal/local exports go between the markers below. They are a stable splice
+# point: the Linux deploy step and the Windows build.ps1 inject a private env
+# file here, so a personal build never hand-merges into the launcher body.
+# Anything set here (effort level, API timeout, even routing) applies this launch
+# and, coming after the scrub above, wins over it.
+# >>> ccwa-local-env >>>
+# <<< ccwa-local-env <<<
+
 # --- Inject the thinking-display fix into the launch args -------------------
 #
 # Fire on a real agent invocation. Surfaces signal a real run differently:
@@ -237,13 +268,15 @@ fi
 # untouched.
 #
 # context-icon feature - component `FJe` in webview/index.js:
-#   if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
-# `c` is "% of context remaining" (maxes at 100), so >=101 never fires and the
-# icon renders whenever a context window is known; the t===0 "no session yet"
-# guard is left intact. The trailing /*ccwa-context-icon*/ is our ownership
-# marker. Maintenance: this keys off the stable string ">=50)return null}", not
-# the minified component name; if a future build changes that substring, apply
-# no-ops loudly (a one-line warning) until the anchor here is updated.
+#   if(t===0)return null;if(c>=50)return null}
+#     -> if(c>=101)return null}/*ccwa-context-icon:t:c*/
+# `c` is "% of context remaining" (maxes at 100), so >=101 never fires. Removing
+# the t===0 guard keeps the icon visible across a reload gap; it may briefly show
+# 0% until the webview receives fresh usage data. The trailing
+# /*ccwa-context-icon:<first-var>:<remaining-var>*/ is our ownership marker.
+# Maintenance: this keys off the minified guard pair shape above, not the
+# component name or exact minified variable names; if a future build changes that
+# shape, apply no-ops loudly (a one-line warning) until the anchor here is updated.
 
 # A bundle feature is enabled when the master switch is on AND its own toggle is
 # on. CC_WORKAROUNDS=0 forces every feature off, so reconcile reverts to clean.
@@ -260,34 +293,48 @@ _cc_feature_enabled() {
 # already present/absent, so chaining them is safe and idempotent.
 _cc_apply_context_icon() {
   local f="$1" tmp count
-  if grep -q '/\*ccwa-context-icon\*/' "$f" 2>/dev/null; then return 0; fi   # already marked
-  count="$( (grep -o '>=50)return null}' "$f" 2>/dev/null || true) | wc -l | tr -d ' ')"
+  if grep -q '/\*ccwa-context-icon' "$f" 2>/dev/null; then return 0; fi   # already marked
+  count="$( (grep -E -o 'if\([A-Za-z_$][A-Za-z0-9_$]*===0\)return null;if\([A-Za-z_$][A-Za-z0-9_$]*>=50\)return null\}' "$f" 2>/dev/null || true) | wc -l | tr -d ' ')"
   if [ "$count" = "0" ]; then
     echo "claudemax: context-icon anchor not found in $f (extension changed?); skipping" >&2
     return 0
   fi
   if [ "$count" != "1" ]; then return 0; fi   # ambiguous (version changed) - skip
   tmp="${f}.ccapply.$$"
-  if sed 's#>=50)return null}#>=101)return null}/*ccwa-context-icon*/#' "$f" > "$tmp" 2>/dev/null \
-     && [ -s "$tmp" ] && grep -q '/\*ccwa-context-icon\*/' "$tmp" 2>/dev/null; then
+  if sed 's#if(\([A-Za-z_$][A-Za-z0-9_$]*\)===0)return null;if(\([A-Za-z_$][A-Za-z0-9_$]*\)>=50)return null}#if(\2>=101)return null}/*ccwa-context-icon:\1:\2*/#' "$f" > "$tmp" 2>/dev/null \
+     && [ -s "$tmp" ] && grep -q '/\*ccwa-context-icon' "$tmp" 2>/dev/null; then
     cat "$tmp" > "$f" 2>/dev/null || true
   fi
   rm -f "$tmp" 2>/dev/null || true
 }
 
 _cc_undo_context_icon() {
-  # Revert our edit to the pristine upstream form. Two ownership fingerprints are
-  # recognized: the current MARKED form, and the legacy BARE form that older
-  # launcher/standalone versions wrote before the marker existed. `>=101)return
-  # null}` is dead upstream code (c maxes at 100), so it appears only as our own
-  # output; adopting it lets a legacy install revert and upgrade cleanly instead
-  # of warning on every launch. The MARKED substitution runs first because the
-  # bare string is a prefix of the marked one.
+  # Revert our edit to the pristine upstream form. Recognized fingerprints are:
+  # the current metadata-marked form; the legacy bare (metadata-less) marker on
+  # arbitrary guard names (older var-agnostic write); and legacy bare/unmarked
+  # forms that older t/c-only versions wrote. Marked substitutions run first
+  # because bare strings are prefixes of marked strings; a final pass strips any
+  # leftover bare marker so apply (which exits early on ANY marker) is never
+  # wedged by an unrecognized form. We deliberately do NOT do a generic
+  # >=101->=50 rewrite: a bare >=101 guard with no marker is not necessarily ours,
+  # and rewriting it would corrupt upstream code that merely resembles a patched
+  # value (the ownership invariant above). Every form we actually write is covered
+  # by the scoped substitutions below.
   local f="$1" tmp
-  grep -qF '>=101)return null}' "$f" 2>/dev/null || return 0   # nothing of ours
+  # Nothing of ours: no >=101 guard AND no leftover marker. The marker check is
+  # load-bearing - a file an older buggy undo left wedged (gate already reverted to
+  # >=50 but the bare marker still appended) has no >=101, yet the orphan strip
+  # below must still run or apply stays wedged on the surviving marker.
+  grep -qF '>=101)return null}' "$f" 2>/dev/null \
+    || grep -qF '/*ccwa-context-icon' "$f" 2>/dev/null \
+    || return 0
   tmp="${f}.ccundo.$$"
-  if sed -e 's#>=101)return null}/\*ccwa-context-icon\*/#>=50)return null}#g' \
-         -e 's#>=101)return null}#>=50)return null}#g' "$f" > "$tmp" 2>/dev/null \
+  if sed -e 's#if(\([A-Za-z_$][A-Za-z0-9_$]*\)>=101)return null}/\*ccwa-context-icon:\([A-Za-z_$][A-Za-z0-9_$]*\):\1\*/#if(\2===0)return null;if(\1>=50)return null}#g' \
+         -e 's#if(\([A-Za-z_$][A-Za-z0-9_$]*\)===0)return null;if(\([A-Za-z_$][A-Za-z0-9_$]*\)>=101)return null}/\*ccwa-context-icon\*/#if(\1===0)return null;if(\2>=50)return null}#g' \
+         -e 's#if(c>=101)return null}/\*ccwa-context-icon\*/#if(t===0)return null;if(c>=50)return null}#g' \
+         -e 's#if(t===0)return null;if(c>=101)return null}#if(t===0)return null;if(c>=50)return null}#g' \
+         -e 's#if(c>=101)return null}#if(t===0)return null;if(c>=50)return null}#g' \
+         -e 's#)return null}/\*ccwa-context-icon\*/#)return null}#g' "$f" > "$tmp" 2>/dev/null \
      && [ -s "$tmp" ]; then
     cat "$tmp" > "$f" 2>/dev/null || true
   fi
@@ -304,12 +351,17 @@ _cc_undo_context_icon() {
 # edit it by hand (CI drift check: tools/gen-embeds --check).
 # >>>CCWA-MD-COPY-EMBED>>> (generated by tools/gen-embeds; do not edit)
 _cc_md_copy_js() { cat <<'CCMDCOPYJS'
-/* cc-md-copy: per-message and whole-conversation copy (markdown/plain) for the
+/* cc-md-copy: per-message and whole-conversation copy (Markdown) for the
  * Claude Code VS Code webview. Self-contained IIFE appended to webview/index.js.
- * Additive and read-only w.r.t. app state; keyed on stable CSS-module class
- * prefixes, so it fails safe (controls simply do not appear) if a prefix moves.
+ * Each control is a single clipboard icon that flips to a checkmark for ~2s when a
+ * copy actually succeeds (no text label, no menu). Additive and read-only w.r.t.
+ * app state; keyed on stable CSS-module class prefixes, so it fails safe (controls
+ * simply do not appear) if a prefix moves.
  * Exposes its pure functions for node unit tests; boot()s only in a real webview. */
-(function () {
+/* Leading ';' so that, appended after the bundle, this IIFE can never be parsed as
+ * a call on the bundle's final expression if it lacks a trailing semicolon (ASI
+ * safety across extension builds). */
+;(function () {
   "use strict";
 
   var CONTROL_PREFIX = "cc-md-copy"; // every injected node's class starts with this
@@ -325,7 +377,7 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
   // not a per-block class (a turn has multiple blocks). "" -> use the bubble itself
   // (already aggregates all blocks; sanitizeClone is the correctness gate).
   var ASSISTANT_CONTENT = "";
-  var FEEDBACK_MS = 1800;
+  var FEEDBACK_MS = 2000; // how long the checkmark shows after a successful copy
 
   // ---- HTML -> Markdown (DOM walk) -------------------------------------------
   // Uses only: nodeType, tagName, childNodes, textContent, getAttribute, className.
@@ -452,7 +504,9 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
         } else if (tag === "BLOCKQUOTE") {
           var inner = block(c).trim().split("\n").map(function (l) { return "> " + l; }).join("\n");
           out += inner + "\n\n";
-        } else if (tag === "HR") out += "---\n\n";
+        } else if (tag === "DETAILS") out += block(c).trim() + "\n\n";
+        else if (tag === "SUMMARY") out += inline(c).trim() + "\n\n";
+        else if (tag === "HR") out += "---\n\n";
         else if (tag === "TABLE") out += table(c) + "\n";
         else if (tag === "BR") out += "\n";
         else if (tag === "STRONG" || tag === "B" || tag === "EM" || tag === "I" ||
@@ -478,11 +532,12 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
   }
 
   // Class-prefix hooks for non-content chrome that renders *inside* an assistant
-  // bubble (verified on 2.1.170; Task 6 re-pins these). tool*/thinking_ are the v1
-  // exclusions; unknownContent_ is the renderer's fallback for unrecognized block
+  // bubble (verified on 2.1.170; Task 6 re-pins these). Tool blocks are excluded
+  // from message copy; thinking summaries are visible content and must remain
+  // copyable. unknownContent_ is the renderer's fallback for unrecognized block
   // types, so stripping it makes a *future* block type fail safe to excluded rather
   // than leaking "Unsupported content" into the copy. Re-pin if a prefix moves.
-  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "thinking_", "unknownContent_"];
+  var CHROME_PREFIXES = ["toolUse_", "toolResult_", "toolReference_", "unknownContent_"];
 
   // True for any node that must never appear in copied output: our own controls,
   // the rating widget (`data-message-rating` + its "Thanks for your feedback"
@@ -500,11 +555,11 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
   // message's text content only. This is a CORRECTNESS GATE, not cosmetic: the
   // default content node is the whole bubble (all content-block siblings, so multi-
   // block assistant turns are captured), and this strip-list is the only thing
-  // keeping the rating widget and v1-excluded blocks out of the copy.
+  // keeping the rating widget and excluded tool/fallback blocks out of the copy.
   function sanitizeClone(contentNode) {
     var clone = contentNode.cloneNode(true);
     (function strip(node) {
-      var kids = (node.childNodes || []).slice();
+      var kids = Array.prototype.slice.call(node.childNodes || []);
       for (var i = 0; i < kids.length; i++) {
         var c = kids[i];
         if (c.nodeType === 1 && isChrome(c)) { node.removeChild(c); continue; }
@@ -512,6 +567,19 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
       }
     })(clone);
     return clone;
+  }
+
+  function hasCopyableContent(contentNode, role) {
+    function walk(node) {
+      if (!node) return false;
+      if (node.nodeType === 3) return !!(node.textContent || "").trim();
+      if (node.nodeType !== 1) return false;
+      if (isChrome(node)) return false;
+      var kids = node.childNodes || [];
+      for (var i = 0; i < kids.length; i++) if (walk(kids[i])) return true;
+      return false;
+    }
+    return walk(contentNode);
   }
 
   function classifyBubble(node) {
@@ -544,7 +612,8 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
     boot();
   } else if (typeof module !== "undefined" && module.exports) {
     module.exports = { htmlToMarkdown: htmlToMarkdown, sanitizeClone: sanitizeClone,
-                       classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown };
+                       classifyBubble: classifyBubble, conversationToMarkdown: conversationToMarkdown,
+                       hasCopyableContent: hasCopyableContent, copyText: copyText };
   }
 
   // ---- live-webview wiring (runs only when a document exists) ----------------
@@ -554,7 +623,7 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
   // The content node to convert/copy: the optional ASSISTANT_CONTENT wrapper if
   // pinned and present, else the bubble itself. The bubble already contains every
   // content-block sibling of a multi-block turn, and sanitizeClone strips the
-  // chrome (rating widget, tool/thinking/unknown blocks, buttons, our controls)
+  // chrome (rating widget, tool/unknown blocks, buttons, our controls)
   // either way -- so this is a narrowing, never the thing that guarantees
   // correctness.
   function contentNodeOf(bubble, role) {
@@ -565,64 +634,107 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
     return bubble;
   }
 
-  function copyText(text) {
+  // Copy `s` via a synchronous execCommand("copy") on an off-screen textarea, and
+  // report whether it actually happened. Done first (and synchronously) because it
+  // runs inside the click gesture and works whether or not the page is a secure
+  // context -- so it covers remote / code-server, where the async Clipboard API is
+  // simply absent. Restores the prior selection/focus so it is invisible.
+  function execCopy(s) {
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
-    } catch (_) {}
-    return Promise.resolve(); // best-effort; never throw into the app
+      if (typeof document === "undefined" || !document.createElement) return false;
+      var prev = document.activeElement || null;
+      var sel = document.getSelection ? document.getSelection() : null;
+      var saved = (sel && sel.rangeCount) ? sel.getRangeAt(0) : null;
+      var ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      (document.body || document.documentElement).appendChild(ta);
+      ta.focus();
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      if (saved && sel) { try { sel.removeAllRanges(); sel.addRange(saved); } catch (_) {} }
+      if (prev && prev.focus) { try { prev.focus(); } catch (_) {} }
+      return !!ok;
+    } catch (_) { return false; }
   }
 
-  function flashFeedback(host) {
+  // Copy `text` and resolve to whether the copy ACTUALLY happened, so callers only
+  // show success on a real copy -- never a false "copied" (the original bug:
+  // navigator.clipboard was undefined in the webview, the code fell through to
+  // Promise.resolve(), and the UI claimed success while nothing was written). Empty
+  // text is a non-copy -> false. execCommand first (gesture-safe, secure-context-
+  // independent); the async Clipboard API is the fallback. Never throws.
+  function copyText(text) {
+    var s = (text == null) ? "" : String(text);
+    if (!s) return Promise.resolve(false);
+    if (execCopy(s)) return Promise.resolve(true);
     try {
-      var fb = document.createElement("span");
-      fb.className = CONTROL_PREFIX + "-feedback";
-      fb.textContent = "Copied";
-      host.appendChild(fb);
-      setTimeout(function () { if (fb && fb.parentNode) fb.parentNode.removeChild(fb); }, FEEDBACK_MS);
+      if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(s).then(
+          function () { return true; },
+          function () { return false; }
+        );
+      }
     } catch (_) {}
+    return Promise.resolve(false);
   }
 
   function bubbleMarkdown(bubble, role) {
     var clean = sanitizeClone(contentNodeOf(bubble, role));
     return role === "assistant" ? htmlToMarkdown(clean) : (clean.textContent || "").trim();
   }
-  function bubblePlain(bubble, role) {
-    return (sanitizeClone(contentNodeOf(bubble, role)).textContent || "").trim();
+
+  // Inline SVG icons (currentColor, ~14px). Set via innerHTML on our own buttons
+  // only; the markup never reaches copied content (sanitizeClone drops our nodes).
+  var ICON_COPY = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  var ICON_CHECK = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
+  // Flip the button to a checkmark for FEEDBACK_MS, then restore. Idempotent across
+  // rapid clicks (any pending restore is cleared first).
+  function showCopied(btn) {
+    try {
+      if (btn.__ccTimer) clearTimeout(btn.__ccTimer);
+      btn.classList.add(CONTROL_PREFIX + "-ok");
+      btn.innerHTML = ICON_CHECK;
+      btn.__ccTimer = setTimeout(function () {
+        try { btn.classList.remove(CONTROL_PREFIX + "-ok"); btn.innerHTML = ICON_COPY; } catch (_) {}
+        btn.__ccTimer = null;
+      }, FEEDBACK_MS);
+    } catch (_) {}
   }
 
-  // Build a single control: a primary "Copy" (markdown) plus a small caret that
-  // toggles a menu with "Copy as plain text". All nodes carry the CONTROL_PREFIX
-  // class so sanitizeClone removes them from any copied content.
-  function buildControl(onMarkdown, onPlain) {
+  // Build a single control: one clipboard-icon button. `onCopy()` is invoked
+  // synchronously on click (so the copy stays inside the user gesture) and must
+  // return a Promise<boolean>; the checkmark shows only when it resolves true. All
+  // nodes carry the CONTROL_PREFIX class so sanitizeClone strips them from copies.
+  function buildControl(onCopy, title) {
     var wrap = document.createElement("span");
     wrap.className = CONTROL_PREFIX;
-    var primary = document.createElement("button");
-    primary.type = "button";
-    primary.className = CONTROL_PREFIX + "-btn";
-    primary.title = "Copy as Markdown";
-    primary.textContent = "Copy";
-    primary.addEventListener("click", function (e) { e.stopPropagation(); onMarkdown(primary); });
-    var caret = document.createElement("button");
-    caret.type = "button";
-    caret.className = CONTROL_PREFIX + "-caret";
-    caret.title = "Copy options";
-    caret.textContent = "▾"; // black down-pointing small triangle
-    var menu = document.createElement("span");
-    menu.className = CONTROL_PREFIX + "-menu";
-    menu.style.display = "none";
-    var plain = document.createElement("button");
-    plain.type = "button";
-    plain.className = CONTROL_PREFIX + "-btn";
-    plain.textContent = "Copy as plain text";
-    plain.addEventListener("click", function (e) { e.stopPropagation(); menu.style.display = "none"; onPlain(plain); });
-    menu.appendChild(plain);
-    caret.addEventListener("click", function (e) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = CONTROL_PREFIX + "-btn";
+    btn.title = title || "Copy as Markdown";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = ICON_COPY;
+    var busy = false;
+    btn.addEventListener("click", function (e) {
       e.stopPropagation();
-      menu.style.display = menu.style.display === "none" ? "inline-block" : "none";
+      if (busy) return;
+      busy = true;
+      var p;
+      try { p = onCopy(); } catch (_) { p = false; }
+      Promise.resolve(p).then(
+        function (ok) { busy = false; if (ok) showCopied(btn); },
+        function () { busy = false; }
+      );
     });
-    wrap.appendChild(primary);
-    wrap.appendChild(caret);
-    wrap.appendChild(menu);
+    wrap.appendChild(btn);
     return wrap;
   }
 
@@ -630,54 +742,69 @@ _cc_md_copy_js() { cat <<'CCMDCOPYJS'
     try {
       var role = classifyBubble(bubble);
       if (!role) return;
-      if (qs(bubble, "." + CONTROL_PREFIX)) return; // already decorated
-      var control = buildControl(
-        function (host) { copyText(bubbleMarkdown(bubble, role)).then(function () { flashFeedback(control); }); },
-        function (host) { copyText(bubblePlain(bubble, role)).then(function () { flashFeedback(control); }); }
-      );
+      // Idempotent: keep exactly one control. A React re-render of the bubble can
+      // leave a stale control behind or transiently defeat an "already decorated"
+      // guard, which is what produced duplicate rows of buttons; prune any extras
+      // every sweep and only add one when none remain.
+      var existing = bubble.querySelectorAll ? bubble.querySelectorAll("." + CONTROL_PREFIX) : null;
+      if (!hasCopyableContent(contentNodeOf(bubble, role), role)) {
+        if (existing && existing.length) {
+          for (var j = existing.length - 1; j >= 0; j--) {
+            if (existing[j] && existing[j].parentNode) existing[j].parentNode.removeChild(existing[j]);
+          }
+        }
+        return;
+      }
+      if (existing && existing.length) {
+        for (var i = existing.length - 1; i >= 1; i--) {
+          if (existing[i] && existing[i].parentNode) existing[i].parentNode.removeChild(existing[i]);
+        }
+        return;
+      }
+      var control = buildControl(function () {
+        return copyText(bubbleMarkdown(bubble, role));
+      }, "Copy as Markdown");
       bubble.appendChild(control);
     } catch (_) {}
   }
 
-  function copyConversation(format) {
+  function copyConversation() {
     var bubbles = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE);
-    if (format === "text") {
-      var lines = [];
-      for (var i = 0; i < bubbles.length; i++) {
-        var role = classifyBubble(bubbles[i]);
-        if (!role) continue;
-        var body = bubblePlain(bubbles[i], role);
-        if (body) lines.push(body);
-      }
-      return copyText(lines.join("\n\n") + (lines.length ? "\n" : ""));
-    }
     return copyText(conversationToMarkdown(bubbles, function (b) {
       return contentNodeOf(b, classifyBubble(b));
     }));
   }
 
+  // A single floating "Copy conversation" icon, present only while a conversation
+  // is open (so it never clutters the history-list view). Pinned top-right by CSS,
+  // clear of the chat input at the bottom; the most-recent-prompt sticky header
+  // sits to its left.
   function installConversationControl() {
     try {
-      if (qs(document, "." + CONTROL_PREFIX + "-conversation")) return;
+      var existing = qs(document, "." + CONTROL_PREFIX + "-conversation");
+      var hasMessages = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE).length > 0;
+      if (!hasMessages) {
+        if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+        return;
+      }
+      if (existing) return;
       var bar = document.createElement("div");
       bar.className = CONTROL_PREFIX + "-conversation";
-      var control = buildControl(
-        function () { copyConversation("markdown").then(function () { flashFeedback(bar); }); },
-        function () { copyConversation("text").then(function () { flashFeedback(bar); }); }
-      );
-      control.title = "Copy entire conversation";
-      bar.appendChild(control);
-      document.body.appendChild(bar); // fixed-position via CSS; placement refined in Task 6
+      bar.appendChild(buildControl(copyConversation, "Copy conversation"));
+      document.body.appendChild(bar);
     } catch (_) {}
   }
 
-  function sweep() { var b = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE); for (var i = 0; i < b.length; i++) decorate(b[i]); }
+  function sweep() {
+    var b = qsa(USER_BUBBLE + "," + ASSISTANT_BUBBLE);
+    for (var i = 0; i < b.length; i++) decorate(b[i]);
+    installConversationControl();
+  }
 
   function boot() {
     try {
       var target = (MESSAGES_CONTAINER && qs(document, MESSAGES_CONTAINER)) || document.body;
       sweep();
-      installConversationControl();
       if (typeof MutationObserver === "undefined") return;
       var obs = new MutationObserver(function () { sweep(); });
       obs.observe(target, { childList: true, subtree: true });
@@ -690,53 +817,54 @@ _cc_md_copy_css() { cat <<'CCMDCOPYCSS'
 .cc-md-copy {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
   vertical-align: middle;
   margin-left: 6px;
 }
-.cc-md-copy-btn,
-.cc-md-copy-caret {
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 1px 6px;
+.cc-md-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
   color: var(--vscode-foreground);
   background: transparent;
-  border: 1px solid var(--vscode-widget-border, transparent);
+  border: none;
   border-radius: 4px;
   cursor: pointer;
-  opacity: 0.65;
+  opacity: 0.6;
 }
-.cc-md-copy-btn:hover,
-.cc-md-copy-caret:hover {
+.cc-md-copy-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+}
+.cc-md-copy-btn:hover {
   opacity: 1;
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
 }
-.cc-md-copy-menu {
-  position: relative;
-  margin-left: 4px;
-  padding: 2px;
-  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
-  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, transparent));
-  border-radius: 4px;
-  z-index: 5;
+/* Success state: the icon is a green checkmark for a moment after a real copy. */
+.cc-md-copy-btn.cc-md-copy-ok,
+.cc-md-copy-btn.cc-md-copy-ok:hover {
+  opacity: 1;
+  color: var(--vscode-charts-green, var(--vscode-testing-iconPassed, #89d185));
+  background: transparent;
 }
-.cc-md-copy-feedback {
-  margin-left: 6px;
-  font-size: 11px;
-  opacity: 0.85;
-  color: var(--vscode-foreground);
-}
+/* Whole-conversation copy: a single floating icon pinned to the top-right corner,
+   clear of the chat input at the bottom. Shown only while a conversation is open
+   (the IIFE adds/removes it). Nudge top/right here if it crowds the sticky header. */
 .cc-md-copy-conversation {
   position: fixed;
-  right: 16px;
-  bottom: 56px;
-  z-index: 10;
+  top: 26px;
+  right: 4px;
+  z-index: 30;
+  display: inline-flex;
   padding: 2px;
   background: var(--vscode-editorWidget-background);
   border: 1px solid var(--vscode-widget-border, transparent);
   border-radius: 6px;
   opacity: 0.85;
+}
+.cc-md-copy-conversation .cc-md-copy {
+  margin-left: 0;
 }
 .cc-md-copy-conversation:hover {
   opacity: 1;

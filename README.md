@@ -6,19 +6,34 @@ Not affiliated with or endorsed by Anthropic. A future Claude Code update could 
 
 ## Workarounds
 
-1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-08].
+1. **Empty thinking summaries (Opus 4.7 / 4.8)** [updated 2026-06-10].
    Thinking summaries render empty in the VS Code extension and headless `-p`/SDK paths, even with `showThinkingSummaries` enabled. Fix via the launcher (recommended), a one-line extension patch, or a local proxy.
    -> [details](#workaround-1-thinking-summaries)
 
-2. **Missing context-usage icon (1M context window)** [updated 2026-06-08].
+   <img alt="A populated Thinking summary in the VS Code chat instead of an empty block" src="media/thinking.png" style="max-width: 100%; height: auto;">
+
+2. **Missing context-usage icon (1M context window)** [updated 2026-06-10].
    The context-usage pie in the chat input is hidden until you have used more than 50% of the context window. With the 1M window that is about 500,000 tokens, so it is effectively never shown. Fix via the launcher (re-patches the webview on each launch), or a standalone patcher script.
    -> [details](#workaround-2-context-usage-icon)
 
-3. **No markdown copy / export of chat** [added 2026-06-09].
+   <img alt="The context-usage icon and tooltip in the VS Code chat input, showing 51 percent context used and 49 percent remaining until auto-compact" src="media/context-icon.png" style="max-width: 100%; height: auto;">
+
+3. **No markdown copy / export of chat** [updated 2026-06-10].
    The chat cannot copy a whole message or the whole conversation as Markdown, and
    has no transcript export. Fix via the launcher (adds copy controls, re-applied
    each launch), a standalone patcher, or a standalone session exporter CLI.
    -> [details](fixes/markdown-copy-export/README.md)
+
+   <img alt="Per-message copy controls added to the VS Code chat" src="media/markdown.png" style="max-width: 100%; height: auto;">
+
+## Quick start
+
+Two downloads, one per platform:
+
+* **Linux / macOS:** [`launcher/claudemax`](launcher/claudemax) - the bash launcher, no build needed.
+* **Windows:** `claudemax.exe` from the [Releases](../../releases) page.
+
+Put it on your PATH, point the VS Code "Claude Code" extension's `claudeCode.claudeProcessWrapper` setting at its full path, and reload the window. That enables every fix above. Terminal use, per-fix toggles, and the full wiring are under [The launcher](#the-launcher) and each workaround's section.
 
 ## The launcher
 
@@ -72,13 +87,13 @@ Extended-thinking summaries stopped appearing with Opus 4.7 and remain unavailab
 * <https://github.com/anthropics/claude-code/issues/49322>
 * <https://github.com/anthropics/claude-code/issues/63358>
 
-There are three workarounds:
+There are technically three workarounds; only the launcher is maintained:
 
-* **Option 1: Launcher (recommended).** A small wrapper that launches Claude Code and adds the missing flag. It fixes the VS Code extension and headless CLI, and it survives Claude Code updates.
-* **Option 2: One-line patch.** A direct edit to one line of the VS Code extension. This only fixes VS Code and must be re-applied after each extension update.
-* **Option 3: Local proxy (advanced).** A localhost proxy that can fix all surfaces at once. This is powerful but untested and is documented for users who want to evaluate it.
+1. **Launcher (recommended).** A small wrapper that launches Claude Code and adds the missing flag. It fixes the VS Code extension and headless CLI, and it survives Claude Code updates.
+2. **One-line `extension.js` patch.** A direct edit to one line of the VS Code extension; see [TECHNICAL.md](TECHNICAL.md#option-2-extensionjs-patch). VS Code only, and must be re-applied after each extension update. Maintained through `2.1.172`; not maintained after.
+3. **Local proxy (advanced).** A localhost proxy that fixes all surfaces at the wire level; see [TECHNICAL.md](TECHNICAL.md#option-3-local-proxy-design). Powerful but untested. Not maintained.
 
-## Option 1: Launcher (recommended)
+## Launcher
 
 The launcher starts the real `claude` binary and appends the missing `--thinking-display summarized` flag. It does not modify Claude Code files, so it continues working after updates. The same wrapper fixes both the VS Code extension and headless CLI.
 
@@ -139,7 +154,7 @@ The same result is achieved with the compiled `.exe`.
 
 ### Want only the thinking fix?
 
-Set `CC_PATCH_CONTEXT_ICON=0` to leave the webview untouched and inject only the thinking-display flag. The launcher reads `CC_THINKING_DISPLAY`:
+Set `CC_PATCH_CONTEXT_ICON=0` and `CC_PATCH_MD_COPY=0` to leave the webview untouched and inject only the thinking-display flag. The launcher reads `CC_THINKING_DISPLAY`:
 
 * unset or `summarized`: show thinking summaries, which is the default
 * `omitted`: hide thinking summaries
@@ -152,7 +167,7 @@ When Claude Code starts a real agent run it puts one of these markers on the com
 
 The launcher inspects the arguments and, when it detects a real run via any of those markers, appends `--thinking-display summarized` before handing off to the real `claude` binary. The official extension also launches the wrapper with the real CLI path as a leading argument (a "process wrapper" convention); the launcher detects and consumes that path so it is not forwarded as a stray positional. See [TECHNICAL.md](TECHNICAL.md) for more.
 
-### Why Option 1 is recommended
+### Why the launcher is recommended
 
 1. It survives updates because it does not edit Claude Code files (for the thinking fix; the context-icon fix re-applies on each launch).
 2. It fixes both the VS Code extension and headless `claude -p` or SDK runs.
@@ -162,56 +177,14 @@ The launcher inspects the arguments and, when it detects a real run via any of t
 6. Every fix can be toggled with one environment variable.
 7. It provides one place to configure effort level, auto mode, timeouts, or model routing. See the commented customization section in the script and the [Side note](#side-note-launching-claude-code-with-third-party-models).
 
-## Option 2: One-line `extension.js` patch (VS Code only)
+## Other approaches (not maintained)
 
-If you only use the VS Code extension and accept reapplying the change after updates, you can patch the extension directly. The fix is a single line:
+The one-line `extension.js` patch and the local proxy are documented in full -
+with their trade-offs and the runnable scripts - in TECHNICAL.md. Neither is
+maintained; the launcher is the supported fix.
 
-```js
-// from:
-if(l.type!=="disabled"&&l.display)B.push("--thinking-display",l.display)
-// to:
-if(l.type!=="disabled")B.push("--thinking-display",l.display||"summarized")
-```
-
-> The extension is minified, so the array variable name varies by build (`B` in 2.0.x, `q` in 2.1.16x, and so on). Match the surrounding text and keep whatever variable name your build uses; [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) does this automatically. This version fragility is one reason Option 1 is preferred.
-
-### Automatic patching on Linux, macOS, WSL, or Git Bash
-
-[`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) finds every installed Claude Code extension, backs each one up, and applies the patch:
-
-```sh
-./fixes/thinking-summaries/patch-extension.sh            # patch and create .bak backups
-./fixes/thinking-summaries/patch-extension.sh --dry-run  # preview only, change nothing
-./fixes/thinking-summaries/patch-extension.sh --revert   # restore backups
-```
-
-Reload the VS Code window after patching. Re-run the patch after every extension update because updates replace the extension folder and remove the change.
-
-### Manual patching on any OS
-
-Find the extension's `extension.js` file, back it up, replace the line shown above, save the file, and reload VS Code. Common locations:
-
-* Linux/macOS: `~/.vscode/extensions/anthropic.claude-code-*/`
-* Windows: `%USERPROFILE%\.vscode\extensions\anthropic.claude-code-*\`
-
-### Why Option 1 is preferred over Option 2
-
-1. Option 2 must be re-applied after every extension update.
-2. Option 2 fixes VS Code only. Headless `claude -p` and SDK runs still come back empty.
-
-## Option 3: Local proxy (advanced, untested)
-
-A localhost proxy can add the missing field to every request, fixing VS Code, CLI, and SDK runs without editing files or reapplying patches. This works because each surface honors `ANTHROPIC_BASE_URL`.
-
-This is a working starting point, not a turnkey fix. It also sits in the path of your live auth token, so review the security notes before relying on it.
-
-```sh
-node fixes/thinking-summaries/proxy.js             # listens on http://127.0.0.1:8788
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8788   # set this where Claude launches
-claude ...                                        # for VS Code, set it for the extension host, then reload
-```
-
-Security: The proxy sees your live auth token. It binds to `127.0.0.1` only, never `0.0.0.0`, and does not log headers or bodies. Unset `ANTHROPIC_BASE_URL` to return directly to Anthropic. See [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) and [TECHNICAL.md](TECHNICAL.md#option-3-local-proxy-design) for details and caveats.
+* [Option 2: extension.js patch](TECHNICAL.md#option-2-extensionjs-patch) - VS Code only, and must be re-applied after every extension update. Script: [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) (`--revert`, `--dry-run`). Maintained through `2.1.172`; not maintained after.
+* [Option 3: local proxy](TECHNICAL.md#option-3-local-proxy-design) - surface-agnostic (VS Code + CLI + SDK) but untested, and it sits in the path of your live auth token. Script: [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js). Not maintained.
 
 ---
 
@@ -232,19 +205,19 @@ There is no environment variable or CLI flag for this threshold, so the fix is a
 
 The launcher carries this fix on by default. Install and wire it up exactly like Workaround 1 (copy [`launcher/claudemax`](launcher/claudemax) to `~/.local/bin`, point `claudeCode.claudeProcessWrapper` at it, reload). On Windows, download `claudemax.exe` from [Releases](../../releases). To get only the context-icon fix and skip thinking injection, set `CC_THINKING_DISPLAY=omitted`.
 
-On each launch the wrapper reconciles the extension's `webview/index.js`, flipping the hidden threshold so the icon shows at any usage level. Because it re-applies every launch, an extension auto-update that reinstalls a fresh bundle is re-patched on the next launch.
+On each launch the wrapper reconciles the extension's `webview/index.js`, removing the startup hide guard and flipping the hidden threshold so the icon shows at any usage level. Because it re-applies every launch, an extension auto-update that reinstalls a fresh bundle is re-patched on the next launch.
 
 > First-run note: the wrapper patches `index.js` on disk when the CLI is spawned, which can be **after** the webview already loaded the old bundle. The first time you enable it you may need **two reloads**: reload once (the spawn patches the file), then reload again (the webview loads the patched bundle). Later windows and post-update launches are already patched on disk.
 
 ### What it changes
 
-In the indicator component, the render gate is `if (c >= 50) return null`, where `c` is the percent of context **remaining**. So the icon renders only when less than 50% remains (more than 50% used). The fix flips the threshold and tags the edit with an ownership marker:
+In the indicator component, the render gates are `if (t === 0) return null` and `if (c >= 50) return null`, where `t` is the known context window and `c` is the percent of context **remaining**. So the icon renders only after the webview knows a session and less than 50% remains (more than 50% used). The fix removes the startup guard, flips the threshold, and tags the edit with an ownership marker:
 
 ```text
-if(c>=50)return null   ->   if(c>=101)return null}/*ccwa-context-icon*/
+if(t===0)return null;if(c>=50)return null}   ->   if(c>=101)return null}/*ccwa-context-icon:t:c*/
 ```
 
-`c` maxes at 100, so `c >= 101` is never true and the gate never hides the icon. The separate `if (t === 0) return null` guard (no context window known yet) is left intact, so nothing renders before a session exists. The edit is anchored on the stable string `>=50)return null}`, not on the minified component name, which changes between builds. The trailing `/*ccwa-context-icon*/` marks the edit as ours, so the launcher only ever reverses its own change.
+`c` maxes at 100, so `c >= 101` is never true and the gate never hides the icon. Removing `if (t === 0) return null` keeps the icon visible after a window reload while usage data is still being repopulated; during that gap it can briefly show `0%`. The edit is anchored on the minified guard-pair shape above, not on the component name or exact minified variable names, which change between builds. The trailing `/*ccwa-context-icon:<first-var>:<remaining-var>*/` marker stores the matched names so the launcher can reverse only its own change back to the same pristine variable names.
 
 ### Turn the context-icon fix on or off
 
@@ -257,8 +230,8 @@ The launcher reads `CC_PATCH_CONTEXT_ICON`:
 
 Unlike Workaround 1, this fix edits the extension's bundled `webview/index.js`. The edit is made safe:
 
-* **Idempotent** - it skips a file that is already in the desired state, and skips (rather than guesses) if the `>=50)return null}` anchor is absent because the extension changed.
-* **Ownership-marked** - the edit carries a `/*ccwa-context-icon*/` marker; the launcher reverses only its own marked edit and never touches upstream code that merely resembles a patched value.
+* **Idempotent** - it skips a file that is already in the desired state, and skips (rather than guesses) if the combined guard shape is absent because the extension changed.
+* **Ownership-marked** - the edit carries a `/*ccwa-context-icon:<first-var>:<remaining-var>*/` marker; the launcher reverses only its own marked edit and never touches upstream code that merely resembles a patched value. Older `/*ccwa-context-icon*/` markers from prior versions are still recognized and normalized.
 * **Snapshotted once** - a whole-file pristine snapshot `index.js.bak-cc-workarounds` is written the first time the file is rewritten, for emergency manual restore only; routine reconcile never reads it.
 * **Atomic** - the change is written to a temp file and moved into place only after it is verified, so a failed or partial write leaves the original untouched.
 * **Best-effort** - every step is guarded; a read-only file, a renamed bundle, or a missing tool simply no-ops and never blocks the launch.
@@ -279,7 +252,7 @@ After patching, reload the webview (Command Palette -> "Developer: Reload Window
 ## Known limitations
 
 1. **Coarse glyph.** The pie is a 3-state gauge, not a continuous fill: it only changes appearance at roughly 62.5% and 87% used. The precise percentage is in the hover tooltip and in `/context`, not in the glyph itself. Making the pie a fine-grained gauge would require new SVG geometry, not a one-line patch, so it is out of scope.
-2. **Transient 0% right after a reload.** The icon reads from a usage store that resets to zero on a window reload and is repopulated by the next assistant turn. Immediately after reloading a continued conversation, before any new turn, the tooltip can briefly read "0% context used"; it self-corrects to the true value after the next turn. (`/context` is unaffected - it queries the CLI directly.) If you would rather hide the icon while the store is empty than show a transient 0%, change the icon's `if(t===0)return null` to `if(t<=0)return null` in `webview/index.js`; the icon then stays hidden until the first turn populates real numbers. This is a manual, optional tweak and is not applied by default.
+2. **Transient 0% right after a reload.** The icon reads from a usage store that resets to zero on a window reload and is repopulated by the next assistant turn. Immediately after reloading a continued conversation, before any new turn, the tooltip can briefly read "0% context used"; it self-corrects to the true value after the next turn. (`/context` is unaffected - it queries the CLI directly.) This is intentional: showing a temporary 0% icon is preferable to hiding the icon for the whole reload gap.
 
 ---
 
@@ -317,12 +290,12 @@ Setup is otherwise identical to Option 1. This is unrelated to the fixes above.
 | [`launcher/claudemax`](launcher/claudemax) | both | Unified launcher (Linux/macOS), env-toggled. |
 | [`launcher/claudemax.win.js`](launcher/claudemax.win.js) | both | Windows source for `claudemax.exe`. |
 | [`launcher/README.md`](launcher/README.md) | both | Wiring, the toggle table, the VS Code env-setting how-to, the build command. |
-| [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) | thinking | Option 2 idempotent `extension.js` patch with `--revert` and `--dry-run`. |
-| [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) | thinking | Option 3 localhost proxy. Advanced and untested. |
+| [`fixes/thinking-summaries/patch-extension.sh`](fixes/thinking-summaries/patch-extension.sh) | thinking | Option 2 `extension.js` patch (`--revert`, `--dry-run`). Unmaintained; see TECHNICAL.md. |
+| [`fixes/thinking-summaries/proxy.js`](fixes/thinking-summaries/proxy.js) | thinking | Option 3 localhost proxy. Advanced, untested, unmaintained. |
 | [`fixes/thinking-summaries/test-thinking-display.sh`](fixes/thinking-summaries/test-thinking-display.sh) | thinking | Live A/B test showing that the flag is the relevant lever. |
 | [`fixes/context-icon/fix-context-icon.py`](fixes/context-icon/fix-context-icon.py) | context icon | Option 2 standalone webview patcher with `--revert`. |
 | [`fixes/markdown-copy-export/add-md-copy.py`](fixes/markdown-copy-export/add-md-copy.py) | markdown copy | Standalone webview patcher (sentinel block, reverse-transform `--revert`). |
-| [`fixes/markdown-copy-export/cc-export.py`](fixes/markdown-copy-export/cc-export.py) | markdown copy | Standalone session exporter (markdown/text, `--open`). |
+| [`fixes/markdown-copy-export/cc-export.py`](fixes/markdown-copy-export/cc-export.py) | markdown copy | Standalone session exporter (markdown or plain text). |
 | [`fixes/markdown-copy-export/webview-inject.js`](fixes/markdown-copy-export/webview-inject.js) | markdown copy | Single source of the appended copy-controls IIFE. |
 | [`tools/gen-embeds`](tools/gen-embeds) | markdown copy | Generates the embedded payload into the launcher + patcher; `--check` drift gate. |
 | [`TECHNICAL.md`](TECHNICAL.md) | both | Full root-cause analysis, the reconcile model, and design notes. |
@@ -342,9 +315,10 @@ pkg launcher/claudemax.win.js --targets node18-win-x64 --output claudemax.exe
 
 ## Compatibility
 
-Confirmed on Opus 4.7 and Opus 4.8 with VS Code extension `2.1.169` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04.
+Confirmed on Opus 4.7 and Opus 4.8 with VS Code extension builds `2.1.169` through `2.1.172` (native-binary CLI), via the `claudeCode.claudeProcessWrapper` setting, on Windows 11 and Ubuntu 24.04.
 
-* **Thinking fix:** earlier builds (`2.1.165` / `2.1.167`) signaled thinking with `--thinking adaptive`; `2.1.169` uses `--max-thinking-tokens` on the VS Code path. The launcher keys off either, plus `-p`/`--print` for headless. The `--thinking-display` flag and the request field are stable levers; the Option 2 minified strings can change between releases (the script matches generically and skips if not found).
-* **Context-icon fix:** the `>50% used` gate appeared around `2.1.165` (absent in `2.1.131` / `2.1.128`). The patch anchors on the stable substring `>=50)return null}`; if a future build changes that exact string, the launcher safely no-ops and the anchor needs updating.
+* **Thinking fix:** earlier builds (`2.1.165` / `2.1.167`) signaled thinking with `--thinking adaptive`; `2.1.169` and later use `--max-thinking-tokens` on the VS Code path. The launcher keys off either, plus `-p`/`--print` for headless. The `--thinking-display` flag and the request field are stable levers; the Option 2 minified strings can change between releases (the script matches generically and skips if not found).
+* **Context-icon fix:** the `>50% used` gate has been observed with different minified names (`Z/U` in `2.1.108` and `2.1.131`, `t/c` in `2.1.170` and `2.1.172`). The patch matches the guard-pair shape with variable-name captures and records the matched names in its ownership marker, so it patches and reverts cleanly regardless of the names; if a future build changes the guard shape itself, the launcher safely no-ops and the anchor needs updating.
+* **Markdown copy/export fix:** the copy controls are appended to the webview bundle and re-applied each launch. The injection is anchored on stable structural markers and skips cleanly if the bundle shape changes.
 
 Behavior may change in future Claude Code releases.
