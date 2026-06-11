@@ -264,7 +264,17 @@ const ICON_BARE = "if(c>=101)return null}";
 const ICON_NEW = "if(c>=101)return null}/*ccwa-context-icon:t:c*/";
 const ICON_LEGACY_NEW_CURRENT = ICON_BARE + ICON_LEGACY_MARKER;
 const ICON_LEGACY_BARE = "if(t===0)return null;if(c>=101)return null}";
-const ICON_LEGACY_NEW = ICON_LEGACY_BARE + ICON_LEGACY_MARKER;
+// Legacy bare (metadata-less) marker on arbitrary guard names: an older
+// var-agnostic write could leave the both-guards >=101 form + bare marker on a
+// non-t/c build (e.g. Z/U). Match it by shape, not the fixed t/c.
+const ICON_LEGACY_NEW_RE = new RegExp(
+  "if\\((" +
+    ICON_IDENT +
+    ")===0\\)return null;if\\((" +
+    ICON_IDENT +
+    ")>=101\\)return null\\}/\\*ccwa-context-icon\\*/",
+  "g"
+);
 
 function iconOld(firstVar, remainingVar) {
   return `if(${firstVar}===0)return null;if(${remainingVar}>=50)return null}`;
@@ -309,10 +319,15 @@ function undoContextIcon(data) {
     .replace(ICON_MARKED_RE, (_, remainingVar, firstVar) =>
       iconOld(firstVar, remainingVar)
     )
-    .split(ICON_LEGACY_NEW).join(ICON_OLD)
+    .replace(ICON_LEGACY_NEW_RE, (_, firstVar, remainingVar) =>
+      iconOld(firstVar, remainingVar)
+    )
     .split(ICON_LEGACY_NEW_CURRENT).join(ICON_OLD)
     .split(ICON_LEGACY_BARE).join(ICON_OLD)
-    .split(ICON_BARE).join(ICON_OLD);
+    .split(ICON_BARE).join(ICON_OLD)
+    // Strip any leftover bare marker so apply is never wedged by an unrecognized
+    // form (parity with the bash launcher's final undo pass).
+    .replace(/\)return null\}\/\*ccwa-context-icon\*\//g, ")return null}");
 }
 
 function contextIconEnabled() {

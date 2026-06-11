@@ -16,6 +16,7 @@ OLD_ICON = "if(t===0)return null;if(c>=50)return null}"
 NEW_ICON = "if(c>=101)return null}/*ccwa-context-icon:t:c*/"
 ALT_OLD_ICON = "if(Z===0)return null;if(U>=50)return null}"
 ALT_NEW_ICON = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
+ALT_LEGACY_MARKED_ICON = "if(Z===0)return null;if(U>=101)return null}/*ccwa-context-icon*/"
 
 
 def run(cmd, *, env=None, cwd=REPO, timeout=10):
@@ -388,6 +389,23 @@ class PatcherRegressionTests(unittest.TestCase):
             backup = pathlib.Path(str(target) + mod.BACKUP_SUFFIX)
             self.assertEqual(backup.read_text(encoding="utf-8"), f"before {ALT_OLD_ICON} after")
             self.assertEqual(mod.patch_file(str(target)), "already-patched")
+
+    def test_fix_context_icon_upgrades_renamed_bare_marked_patch(self):
+        # A bundle left by an older var-agnostic patcher carries a BARE
+        # (metadata-less) marker on non-t/c guard vars. undo_known_patches must
+        # recognize it by shape, not the fixed t/c, so patch_file re-applies and
+        # upgrades it to the metadata marker rather than reporting gate-not-found.
+        spec = importlib.util.spec_from_file_location(
+            "fix_context_icon", REPO / "fixes" / "context-icon" / "fix-context-icon.py"
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        with tempfile.TemporaryDirectory() as td:
+            target = pathlib.Path(td) / "index.js"
+            target.write_text(f"before {ALT_LEGACY_MARKED_ICON} after", encoding="utf-8")
+            self.assertEqual(mod.patch_file(str(target)), "PATCHED")
+            self.assertEqual(target.read_text(encoding="utf-8"), f"before {ALT_NEW_ICON} after")
 
     def test_patch_extension_avoids_bash4_mapfile(self):
         source = (REPO / "fixes" / "thinking-summaries" / "patch-extension.sh").read_text(encoding="utf-8")

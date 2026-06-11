@@ -310,18 +310,22 @@ _cc_apply_context_icon() {
 
 _cc_undo_context_icon() {
   # Revert our edit to the pristine upstream form. Recognized fingerprints are:
-  # the current metadata-marked form, and legacy marked/bare forms that older
-  # versions wrote with fixed t/c names. The marked substitutions run first
-  # because bare strings are prefixes of marked strings.
+  # the current metadata-marked form; the legacy bare (metadata-less) marker on
+  # arbitrary guard names (older var-agnostic write); and legacy bare/unmarked
+  # forms that older t/c-only versions wrote. Marked substitutions run first
+  # because bare strings are prefixes of marked strings; a final pass strips any
+  # leftover bare marker so apply (which exits early on ANY marker) is never
+  # wedged by an unrecognized form.
   local f="$1" tmp
   grep -qF '>=101)return null}' "$f" 2>/dev/null || return 0   # nothing of ours
   tmp="${f}.ccundo.$$"
   if sed -e 's#if(\([A-Za-z_$][A-Za-z0-9_$]*\)>=101)return null}/\*ccwa-context-icon:\([A-Za-z_$][A-Za-z0-9_$]*\):\1\*/#if(\2===0)return null;if(\1>=50)return null}#g' \
-         -e 's#if(t===0)return null;if(c>=101)return null}/\*ccwa-context-icon\*/#if(t===0)return null;if(c>=50)return null}#g' \
+         -e 's#if(\([A-Za-z_$][A-Za-z0-9_$]*\)===0)return null;if(\([A-Za-z_$][A-Za-z0-9_$]*\)>=101)return null}/\*ccwa-context-icon\*/#if(\1===0)return null;if(\2>=50)return null}#g' \
          -e 's#if(c>=101)return null}/\*ccwa-context-icon\*/#if(t===0)return null;if(c>=50)return null}#g' \
          -e 's#if(t===0)return null;if(c>=101)return null}#if(t===0)return null;if(c>=50)return null}#g' \
          -e 's#if(c>=101)return null}#if(t===0)return null;if(c>=50)return null}#g' \
-         -e 's#>=101)return null}#>=50)return null}#g' "$f" > "$tmp" 2>/dev/null \
+         -e 's#>=101)return null}#>=50)return null}#g' \
+         -e 's#)return null}/\*ccwa-context-icon\*/#)return null}#g' "$f" > "$tmp" 2>/dev/null \
      && [ -s "$tmp" ]; then
     cat "$tmp" > "$f" 2>/dev/null || true
   fi

@@ -33,6 +33,9 @@ LEGACY_MARKED = "if(t===0)return null;if(c>=101)return null}" + LEGACY_MARKER
 BARE101 = "if(t===0)return null;if(c>=101)return null}"
 ALT_OLD = "if(Z===0)return null;if(U>=50)return null}"
 ALT_MARKED = "if(U>=101)return null}/*ccwa-context-icon:Z:U*/"
+# A var-agnostic older launcher could write the BARE (metadata-less) marker on a
+# non-t/c build, e.g. Z/U. Undo must recognize it by shape, not the fixed t/c.
+ALT_LEGACY_MARKED = "if(Z===0)return null;if(U>=101)return null}" + LEGACY_MARKER
 BAK = ".bak-cc-workarounds"
 MD_OPEN = "/* cc-md-copy v1 */"
 MD_CLOSE = "/* /cc-md-copy v1 */"
@@ -182,6 +185,28 @@ class ReconcileMixin:
             res = self._run(td, home)
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertEqual(idx.read_text(encoding="utf-8"), f"before {MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_bare_marked_patch_with_renamed_vars_is_upgraded(self):
+        # A bare (metadata-less) marker on a non-t/c build (Z/U). Undo must match
+        # the guard pair by shape and strip the marker so apply re-patches; the
+        # t/c-only fallback otherwise leaves the marker, and apply then exits early
+        # on it, committing the original >=50 gate (icon stays hidden).
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_LEGACY_MARKED} after")
+            res = self._run(td, home)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_MARKED} after")
+            self.assertNotIn("anchor not found", res.stderr)
+
+    def test_legacy_bare_marked_patch_with_renamed_vars_reverts_when_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            idx = make_extension(home, f"before {ALT_LEGACY_MARKED} after")
+            res = self._run(td, home, env_extra={"CC_PATCH_CONTEXT_ICON": "0"})
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(idx.read_text(encoding="utf-8"), f"before {ALT_OLD} after")
             self.assertNotIn("anchor not found", res.stderr)
 
     def test_legacy_bare_patch_is_reverted_when_feature_disabled(self):

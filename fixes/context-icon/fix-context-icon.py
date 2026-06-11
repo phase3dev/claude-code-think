@@ -64,12 +64,20 @@ OLD_RE = re.compile(rf"if\(({IDENT})===0\)return null;if\(({IDENT})>=50\)return 
 MARKED_RE = re.compile(
     rf"if\(({IDENT})>=101\)return null\}}/\*ccwa-context-icon:({IDENT}):\1\*/"
 )
+# Legacy bare (metadata-less) marker on arbitrary guard names: an older
+# var-agnostic write could leave the both-guards >=101 form + bare marker on a
+# non-t/c build (e.g. Z/U). Recognize it by shape, not the fixed t/c.
+LEGACY_NEW_RE = re.compile(
+    rf"if\(({IDENT})===0\)return null;if\(({IDENT})>=101\)return null\}}/\*ccwa-context-icon\*/"
+)
+# Strip any leftover bare marker so patch_file (which only re-applies on the
+# pristine guard pair) is never wedged by an unrecognized bare-marked form.
+ORPHAN_MARKER_RE = re.compile(r"\)return null\}/\*ccwa-context-icon\*/")
 OLD = "if(t===0)return null;if(c>=50)return null}"
 NEW_BARE = "if(c>=101)return null}"
 NEW_LEGACY = NEW_BARE + "/*ccwa-context-icon*/"
 NEW = "if(c>=101)return null}/*ccwa-context-icon:t:c*/"
 LEGACY_BARE = "if(t===0)return null;if(c>=101)return null}"
-LEGACY_NEW = LEGACY_BARE + "/*ccwa-context-icon*/"
 BACKUP_SUFFIX = ".bak-context-icon"
 
 
@@ -86,12 +94,13 @@ def marked_guard(first_var, remaining_var):
 
 def undo_known_patches(data):
     data = MARKED_RE.sub(lambda m: old_guard(m.group(2), m.group(1)), data)
-    return (
-        data.replace(LEGACY_NEW, OLD)
-        .replace(NEW_LEGACY, OLD)
+    data = LEGACY_NEW_RE.sub(lambda m: old_guard(m.group(1), m.group(2)), data)
+    data = (
+        data.replace(NEW_LEGACY, OLD)
         .replace(LEGACY_BARE, OLD)
         .replace(NEW_BARE, OLD)
     )
+    return ORPHAN_MARKER_RE.sub(")return null}", data)
 
 DISCOVERY_GLOBS = [
     os.path.expanduser("~/.vscode/extensions/anthropic.claude-code-*/webview/index.js"),
